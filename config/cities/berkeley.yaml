@@ -1,0 +1,105 @@
+# Berkeley, CA — City Configuration
+# Used for first validation run (compare against Berkeley Fire Evacuation Study)
+
+city_name: "Berkeley"
+state: "CA"
+state_fips: "06"
+county_fips: "001"  # Alameda County
+place_fips: "06000"  # Berkeley city FIPS
+
+# OSMnx place query string
+osmnx_place: "Berkeley, California, USA"
+
+# ============================================================
+# FHSZ — Berkeley is LRA (incorporated city).
+# The CAL FIRE HHZ_ref_FHSZ API returned only 15 tiny fragments covering
+# 0.03 sq km (0.1% of city) — almost entirely absent. The true Berkeley Hills
+# FHSZ coverage is ~15–20% of the city (VHFHSZ upper hills, High transitional,
+# Moderate lower foothill). Without a local file, road degradation is applied
+# to virtually no segments, underestimating ΔT for hills projects.
+#
+# To fix:
+#   1. Download the CAL FIRE FRAP statewide FHSZ shapefile:
+#      https://frap.fire.ca.gov/mapping/gis-data/
+#   2. Clip to data/berkeley/boundary.geojson in QGIS or Python.
+#   3. Save as config/cities/fhsz/berkeley_fhsz.geojson
+#   4. Run: uv run python main.py analyze --city "Berkeley" --refresh
+#
+# OR: if Alameda County maintains a public FHSZ ArcGIS FeatureServer,
+# set fhsz_fallback_api to that URL and JOSH will auto-provision the file.
+# Add the URL to config/cities/fhsz/README.md once confirmed.
+#
+# Known affected demo projects (2026-03-16 audit):
+#   Claremont Hills Terrace (37.8760, -122.2600) — currently non_fhsz,
+#     likely High or VHFHSZ. Determination may change on correct data.
+#   Hills Gateway (37.8914, -122.2494) — currently VHFHSZ (correct by coincidence;
+#     pin lands inside one of the 15 API fragments).
+# ============================================================
+fhsz_local_file: "config/cities/fhsz/berkeley_fhsz.geojson"
+# Alameda County LRA FHSZ FeatureServer — February 24, 2025 adoption.
+# Used to auto-provision berkeley_fhsz.geojson on --refresh when file is missing.
+fhsz_fallback_api: "https://services7.arcgis.com/T3LbxamSmhpjBppB/arcgis/rest/services/Alameda_County_Local_Responsibility_Area_Fire_Hazard_Severity_Zone_/FeatureServer/0"
+
+# Census TIGER city boundary URL
+# (Alameda County places shapefile)
+tiger_url: "https://www2.census.gov/geo/tiger/TIGER2023/PLACE/tl_2023_06_place.zip"
+
+# Coordinate Reference System
+crs: "EPSG:4326"   # WGS84 for storage
+analysis_crs: "EPSG:26910"  # UTM Zone 10N for distance calculations (meters)
+
+# City-specific parameter overrides (leave empty to use parameters.yaml defaults).
+# v3.4.1: behavioral_mobilization (0.90, FHWA) and vehicles_per_unit (1.9, ACS B25044)
+# are the two vehicle-demand parameters; override either with local evidence.
+overrides: {}
+# Example overrides:
+#   unit_threshold: 10          # lower than default (15) when city network is more constrained
+#   vehicles_per_unit: 1.7      # if city-specific ACS B25044 differs from 1.9 CA statewide
+#   behavioral_mobilization: 0.85  # if local evacuation compliance data supports lower rate
+
+# Safe egress window overrides (uncomment to override global defaults in parameters.yaml)
+# Use only if city has commissioned fire behavior study with specific timelines
+# or faces conditions materially different from the NIST Camp Fire baseline.
+# safe_egress_window:
+#   vhfhsz: 30        # Example: canyon terrain with Santa Ana wind exposure
+#   high_fhsz: 60     # Example: denser urban fuels with faster spread
+#   moderate_fhsz: 90
+#   non_fhsz: 120
+
+# ============================================================
+# Employment and Student Demand Parameters
+# Source: KLD Engineering AB 747 Study (Berkeley, March 2024)
+# ============================================================
+
+# Fraction of working-age population (16+) that is employed
+# Source: U.S. Census ACS 2022, Berkeley
+employment_rate: 0.62
+
+# Fraction of Berkeley jobs filled by workers commuting in from outside Berkeley
+# Source: Census LEHD OnTheMap, 2021 — Alameda County inflow/outflow
+commute_in_fraction: 0.45
+
+# University campuses contributing student vehicle demand
+# Students assigned to block groups within 0.5 miles of campus centroid (area-weighted)
+universities:
+  - name: "UC Berkeley"
+    enrollment: 45057         # Fall 2023 enrollment (Office of Planning & Analysis)
+    student_vehicle_rate: 0.08  # Fraction of enrolled students with a vehicle on campus
+    location_lat: 37.8724
+    location_lon: -122.2595
+
+# Key evacuation routes for validation (from Berkeley study)
+# These should appear in the output for cross-check
+known_evacuation_routes:
+  - "Tunnel Road"
+  - "Fish Ranch Road"
+  - "Grizzly Peak Boulevard"
+  - "Claremont Avenue"
+  - "College Avenue"
+
+# Notes
+notes: >
+  Berkeley Hills in FHSZ Zones 2-3. First city analyzed for MVP validation.
+  Compare v/c ratios against published Berkeley Fire Evacuation Capacity Study.
+  Target accuracy: within 10% of published values for primary evacuation routes.
+  v3.4.1: vehicles_per_unit=1.9 (ACS B25044 CA statewide), behavioral_mobilization=0.90 (FHWA).

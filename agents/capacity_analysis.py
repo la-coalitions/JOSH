@@ -1,0 +1,1166 @@
+# Copyright (C) 2026 Thomas Gonzalez
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# This file is part of JOSH (Jurisdictional Objective Standards for Housing).
+# See LICENSE for full terms. See CONTRIBUTING.md for contributor license terms.
+
+"""
+Agent 2: Capacity Analysis — JOSH v3.0
+
+Calculates objective, verifiable evacuation route capacity metrics using
+Highway Capacity Manual 2022 (HCM 2022) standards, with hazard-aware
+capacity degradation for road segments in FHSZ zones.
+
+Key outputs per road segment:
+- capacity_vph          — raw HCM 2022 capacity (lanes × per-lane rate)
+- fhsz_zone             — FHSZ zone for this segment
+- hazard_degradation    — degradation factor for segment's zone
+- effective_capacity_vph — capacity_vph × hazard_degradation
+- baseline_demand_vph   — catchment-based demand (for display)
+- catchment_units       — housing units routed through this segment
+- vc_ratio, los         — informational only (not used in ΔT determination)
+- is_evacuation_route   — boolean
+- connectivity_score    — path count
+
+Also returns a list of EvacuationPath objects capturing per-path bottleneck data.
+
+Pipeline order (v3.0+):
+  1. HCM capacity per segment
+  2a. Direct capacity overrides (post-HCM, city-provided values)
+  2b. Hazard degradation → effective_capacity_vph (NEW in v3.0)
+  3. Identify evacuation routes + bottleneck tracking (MODIFIED: uses effective_capacity)
+  4. Apply baseline demand (catchment or fallback)
+  5. v/c ratio and LOS (informational)
+"""
+import json
+import logging
+from pathlib import Path
+from typing import Optional
+
+import geopandas as gpd
+import networkx as nx
+import numpy as np
+import osmnx as ox
+import pandas as pd
+import yaml
+from shapely.geometry import Point
+
+from models.evacuation_path import EvacuationPath
+
+logger = logging.getLogger(__name__)
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Zone label → canonical hazard_zone key (matches hazard_degradation keys in parameters.yaml)
+_HAZ_CLASS_TO_ZONE = {
+    3: "vhfhsz",
+    2: "high_fhsz",
+    1: "moderate_fhsz",
+    0: "non_fhsz",
+}
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def analyze_capacity(
+    roads_gdf: gpd.GeoDataFrame,
+    fhsz_gdf: gpd.GeoDataFrame,
+    boundary_gdf: gpd.GeoDataFrame,
+    config: dict,
+    city_config: dict,
+    block_groups_gdf: Optional[gpd.GeoDataFrame] = None,
+    data_dir: Optional[Path] = None,
+) -> tuple[gpd.GeoDataFrame, list]:
+    """
+    Run full capacity analysis pipeline on a road network.
+
+    Pipeline (v3.0):
+      1. HCM 2022 capacity per segment
+      2. Hazard-aware capacity degradation (effective_capacity_vph)
+      3. Identify evacuation routes; compute catchment and bottleneck per path
+      4. Calculate baseline demand (catchment-based or fallback)
+      5. Calculate v/c ratio and LOS (informational)
+
+    Returns:
+        (roads_gdf enriched with capacity columns, list of EvacuationPath objects)
+    """
+    analysis_crs = city_config.get("analysis_crs", "EPSG:26910")
+
+    logger.info(f"Analyzing capacity for {len(roads_gdf)} road segments...")
+
+    # Step 1: HCM Capacity
+    roads_gdf = _apply_hcm_capacity(roads_gdf, config)
+
+    # Step 2a: Direct capacity overrides (post-HCM) — city-provided values
+    roads_gdf = _apply_capacity_overrides(roads_gdf, city_config, data_dir)
+
+    # Step 2b: Hazard Degradation (NEW in v3.0)
+    roads_gdf = _apply_hazard_degradation(roads_gdf, fhsz_gdf, config, analysis_crs)
+
+    # Resolve exit highway types: city config overrides global default.
+    # City engineers can add "secondary" for cities without freeway access.
+    _default_hw = ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link"]
+    _city_evac  = city_config.get("evacuation", {})
+    _glob_evac  = config.get("evacuation", {})
+    exit_hw_types = set(
+        _city_evac.get("exit_highway_types",
+            _glob_evac.get("exit_highway_types", _default_hw))
+    )
+
+    # known_exit_nodes: explicit OSM node IDs for non-municipal jurisdictions
+    # where ox.graph_from_polygon() clips exit roads before they reach the boundary.
+    _known_exits = city_config.get("known_exit_nodes") or None
+
+    # Step 3: Evacuation routes + catchment weights + bottleneck tracking
+    roads_gdf, evacuation_paths = _identify_evacuation_routes(
+        roads_gdf, fhsz_gdf, boundary_gdf, config, analysis_crs, block_groups_gdf,
+        data_dir=data_dir,
+        exit_highway_types=exit_hw_types,
+        known_exit_nodes=_known_exits,
+    )
+
+    # Step 4: Baseline demand
+    if (
+        block_groups_gdf is not None
+        and not block_groups_gdf.empty
+        and "demand" in config
+    ):
+        roads_gdf = _apply_buffer_demand(roads_gdf, block_groups_gdf, config, analysis_crs)
+        roads_gdf["evacuation_demand_vph"] = roads_gdf["baseline_demand_vph"]
+
+    roads_gdf = _apply_baseline_demand(roads_gdf, config)
+
+    # Step 5: v/c ratio and LOS (informational)
+    roads_gdf["vc_ratio"] = roads_gdf.apply(
+        lambda r: calculate_vc_ratio(r["baseline_demand_vph"], r["capacity_vph"]),
+        axis=1,
+    )
+    roads_gdf["los"] = roads_gdf["vc_ratio"].apply(
+        lambda vc: assign_los(vc, config)
+    )
+
+    # Persist evacuation paths if data_dir provided
+    if data_dir is not None and evacuation_paths:
+        paths_file = Path(data_dir) / "evacuation_paths.json"
+        paths_file.parent.mkdir(parents=True, exist_ok=True)
+        paths_file.write_text(
+            json.dumps([p.to_dict() for p in evacuation_paths], indent=2)
+        )
+        logger.info(f"  Saved {len(evacuation_paths)} evacuation paths → {paths_file}")
+
+    evac_count = roads_gdf["is_evacuation_route"].sum()
+    logger.info(
+        f"Capacity analysis complete. {evac_count} evacuation route segments. "
+        f"{len(evacuation_paths)} bottleneck paths computed."
+    )
+    return roads_gdf, evacuation_paths
+
+
+# ---------------------------------------------------------------------------
+# Step 1: HCM 2022 Capacity
+# ---------------------------------------------------------------------------
+
+def _apply_hcm_capacity(gdf: gpd.GeoDataFrame, config: dict) -> gpd.GeoDataFrame:
+    """Calculate capacity_vph for every road segment using HCM 2022 formulas."""
+    gdf["capacity_vph"] = gdf.apply(
+        lambda r: calculate_hcm_capacity(
+            r["road_type"],
+            r["lane_count"],
+            r["speed_limit"],
+            config,
+        ),
+        axis=1,
+    )
+    return gdf
+
+
+def calculate_hcm_capacity(
+    road_type: str,
+    lanes: int,
+    speed: int,
+    config: dict,
+) -> float:
+    """
+    Calculate road segment capacity in passenger cars per hour (pc/h).
+
+    Source: Highway Capacity Manual 2022 (HCM 7th Edition)
+    - Freeway: 2,250 pc/h per lane (Ch. 12, Exhibit 12-6)
+    - Multilane: 1,900 pc/h per lane (Ch. 12, Exhibit 12-7)
+    - Two-lane: speed-dependent lookup (Ch. 15)
+    """
+    hcm = config.get("hcm_capacity", {})
+
+    if road_type == "freeway":
+        cap_per_lane = hcm.get("freeway", {}).get("capacity_per_lane", 2250)
+        return cap_per_lane * max(lanes, 1)
+
+    if road_type == "multilane":
+        cap_per_lane = hcm.get("multilane", {}).get("capacity_per_lane", 1900)
+        return cap_per_lane * max(lanes, 1)
+
+    if road_type == "two_lane":
+        by_speed = hcm.get("two_lane", {}).get("by_speed", {})
+        by_speed_int = {int(k): v for k, v in by_speed.items()}
+        valid_thresholds = sorted(k for k in by_speed_int if k <= speed)
+        if valid_thresholds:
+            return float(by_speed_int[valid_thresholds[-1]])
+        all_thresholds = sorted(by_speed_int.keys())
+        if all_thresholds:
+            return float(by_speed_int[all_thresholds[0]])
+        return 900.0
+
+    logger.warning(f"Unknown road_type '{road_type}' — capacity set to 0.")
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Step 2a: Direct Capacity Overrides (post-HCM)
+# ---------------------------------------------------------------------------
+
+def _apply_capacity_overrides(
+    roads_gdf: gpd.GeoDataFrame,
+    city_config: dict,
+    data_dir: Optional[Path],
+) -> gpd.GeoDataFrame:
+    """
+    Apply direct capacity_vph overrides from the city road override YAML.
+
+    Called after _apply_hcm_capacity() so it overwrites HCM results for
+    specifically flagged segments. Sets capacity_source column:
+      'hcm'           — derived from HCM 2022 formula (default)
+      'city_override' — set directly by city engineer
+
+    Requires 'reason' and 'source' fields alongside any capacity_vph entry.
+    FHSZ hazard degradation still applies on top of city-provided values.
+    """
+    roads_gdf = roads_gdf.copy()
+    roads_gdf["capacity_source"] = "hcm"
+    roads_gdf["capacity_override_reason"] = None
+    roads_gdf["capacity_override_source_doc"] = None
+
+    if data_dir is None:
+        return roads_gdf
+
+    city_slug = Path(data_dir).name
+    override_path = _REPO_ROOT / "config" / "private" / "cities" / f"{city_slug}_road_overrides.yaml"
+    if not override_path.exists():
+        return roads_gdf
+
+    with open(override_path) as f:
+        override_data = yaml.safe_load(f)
+
+    entries = (override_data or {}).get("road_overrides", []) or []
+
+    # Build osmid → DataFrame index lookup
+    osmid_to_idx: dict[str, int] = {}
+    for idx, row in roads_gdf.iterrows():
+        oid = row.get("osmid")
+        if oid is None:
+            continue
+        for o in (oid if isinstance(oid, list) else [oid]):
+            osmid_to_idx[str(o)] = idx
+
+    applied = 0
+    for entry in entries:
+        if not isinstance(entry, dict) or "capacity_vph" not in entry:
+            continue
+
+        osmid_key = str(entry.get("osmid", "")).strip()
+        if not osmid_key:
+            logger.warning(
+                "capacity_override: entry with capacity_vph missing osmid — skipped. "
+                "Use osmid (not name) for direct capacity overrides."
+            )
+            continue
+
+        reason = (entry.get("reason") or "").strip()
+        source = (entry.get("source") or "").strip()
+        if not reason or not source:
+            logger.warning(
+                f"capacity_override: osmid {osmid_key!r} — "
+                f"'reason' and 'source' are required for capacity_vph overrides; skipping."
+            )
+            continue
+
+        if osmid_key not in osmid_to_idx:
+            logger.warning(
+                f"capacity_override: osmid {osmid_key!r} not found in roads_gdf "
+                f"(stale override entry — road may have been removed from OSM)."
+            )
+            continue
+
+        idx = osmid_to_idx[osmid_key]
+        roads_gdf.at[idx, "capacity_vph"] = float(entry["capacity_vph"])
+        roads_gdf.at[idx, "capacity_source"] = "city_override"
+        roads_gdf.at[idx, "capacity_override_reason"] = reason
+        roads_gdf.at[idx, "capacity_override_source_doc"] = source
+        applied += 1
+
+    if applied:
+        logger.info(
+            f"Capacity overrides: {applied} segment(s) — capacity_vph set from city data "
+            f"({override_path.name})"
+        )
+
+    return roads_gdf
+
+
+# ---------------------------------------------------------------------------
+# Step 2b: Hazard-Aware Capacity Degradation (NEW in v3.0)
+# ---------------------------------------------------------------------------
+
+def _apply_hazard_degradation(
+    roads_gdf: gpd.GeoDataFrame,
+    fhsz_gdf: gpd.GeoDataFrame,
+    config: dict,
+    analysis_crs: str,
+) -> gpd.GeoDataFrame:
+    """
+    Assign FHSZ zone and hazard degradation factor to each road segment.
+
+    Method: Spatial join — for each road segment, find the FHSZ zone it intersects.
+    Segments outside any FHSZ zone get factor 1.0 (non_fhsz).
+
+    effective_capacity_vph = capacity_vph × hazard_degradation
+
+    Source: HCM composite factors (Exhibit 10-15 visibility + Exhibit 10-17 incident).
+    See config/parameters.yaml hazard_degradation for full derivation.
+    """
+    deg_cfg = config.get("hazard_degradation", {})
+    enabled = deg_cfg.get("enabled", True)
+    factors = deg_cfg.get("factors", {
+        "vhfhsz": 0.35, "high_fhsz": 0.50, "moderate_fhsz": 0.75, "non_fhsz": 1.00
+    })
+
+    # Initialize defaults
+    roads_gdf = roads_gdf.copy()
+    roads_gdf["fhsz_zone"]            = "non_fhsz"
+    roads_gdf["hazard_degradation"]   = 1.0
+    roads_gdf["effective_capacity_vph"] = roads_gdf["capacity_vph"]
+
+    if not enabled or fhsz_gdf.empty:
+        logger.info("  Hazard degradation: disabled or no FHSZ data — all factors = 1.0")
+        return roads_gdf
+
+    logger.info("  Applying hazard degradation to road segments...")
+
+    # Project to analysis CRS for spatial join
+    roads_proj = roads_gdf.to_crs(analysis_crs)
+    fhsz_proj  = fhsz_gdf.to_crs(analysis_crs)
+
+    # Build HAZ_CLASS → zone key mapping
+    # HAZ_CLASS in data: integer 1=Moderate, 2=High, 3=VeryHigh
+    joined = gpd.sjoin(
+        roads_proj[["geometry"]].reset_index(),
+        fhsz_proj[["geometry", "HAZ_CLASS"]],
+        how="left",
+        predicate="intersects",
+    )
+
+    # For segments intersecting multiple zones, take the highest (most restrictive)
+    if "HAZ_CLASS" in joined.columns:
+        joined["HAZ_CLASS"] = pd.to_numeric(joined["HAZ_CLASS"], errors="coerce")
+        zone_max = joined.groupby("index")["HAZ_CLASS"].max()
+        roads_gdf["_haz_class"] = roads_gdf.index.map(zone_max).fillna(0).astype(int)
+    else:
+        roads_gdf["_haz_class"] = 0
+
+    def _haz_to_zone(haz: int) -> str:
+        return _HAZ_CLASS_TO_ZONE.get(haz, "non_fhsz")
+
+    roads_gdf["fhsz_zone"] = roads_gdf["_haz_class"].apply(_haz_to_zone)
+    roads_gdf["hazard_degradation"] = roads_gdf["fhsz_zone"].map(factors).fillna(1.0)
+    roads_gdf["effective_capacity_vph"] = roads_gdf["capacity_vph"] * roads_gdf["hazard_degradation"]
+    roads_gdf = roads_gdf.drop(columns=["_haz_class"])
+
+    zone_counts = roads_gdf["fhsz_zone"].value_counts()
+    logger.info(f"  Degradation applied: {dict(zone_counts)}")
+    degraded = (roads_gdf["hazard_degradation"] < 1.0).sum()
+    logger.info(f"  {degraded} segments with degradation factor < 1.0")
+
+    return roads_gdf
+
+
+# ---------------------------------------------------------------------------
+# Step 4: Baseline Demand
+# ---------------------------------------------------------------------------
+
+def _apply_baseline_demand(gdf: gpd.GeoDataFrame, config: dict) -> gpd.GeoDataFrame:
+    """
+    Calculate catchment_demand_vph, baseline_demand_vph, and normal_demand_vph.
+
+    Three demand columns:
+      catchment_demand_vph — raw demand with NO mob applied (mob applied at test time)
+      baseline_demand_vph  — evac demand for display (×0.57)
+      normal_demand_vph    — normal peak-hour (×0.10)
+
+    Note: v3.4 uses a constant mobilization rate (0.90, NFPA 101 design basis) for
+    both baseline display and the ΔT engine. FHSZ zone affects road capacity only.
+    """
+    method      = config.get("evacuation_demand", {}).get("method", "catchment")
+    peak_factor = config.get("aadt_peak_hour_factor", 0.10)
+    vpu         = config.get("vehicles_per_unit", 1.9)
+    mob         = config.get("behavioral_mobilization", 0.90)  # FHWA: mandatory evac compliance rate, constant
+    aadt_col    = "aadt" if "aadt" in gdf.columns else None
+    has_catchment = "catchment_units" in gdf.columns
+
+    catchment_demands = []
+    demands           = []
+    normal_demands    = []
+    sources           = []
+    estimated         = []
+
+    for _, row in gdf.iterrows():
+        if aadt_col and pd.notna(row.get(aadt_col)):
+            d = float(row[aadt_col]) * peak_factor
+            catchment_demands.append(d / mob if mob > 0 else d)
+            demands.append(d)
+            normal_demands.append(d)
+            sources.append("aadt")
+            estimated.append(False)
+        elif (
+            method == "catchment"
+            and row.get("is_evacuation_route", False)
+            and has_catchment
+            and pd.notna(row.get("catchment_units"))
+            and row["catchment_units"] > 0
+        ):
+            cu = float(row["catchment_units"])
+            catchment_demands.append(cu * vpu)
+            demands.append(cu * vpu * mob)
+            normal_demands.append(cu * vpu * peak_factor)
+            sources.append("catchment_based")
+            estimated.append(True)
+        else:
+            d = _estimate_demand_from_road_class(row["road_type"], row["capacity_vph"])
+            catchment_demands.append(d / mob if mob > 0 else d)
+            demands.append(d)
+            normal_demands.append(d)
+            sources.append("road_class_estimated")
+            estimated.append(True)
+
+    gdf["catchment_demand_vph"] = catchment_demands
+    gdf["baseline_demand_vph"]  = demands
+    gdf["normal_demand_vph"]    = normal_demands
+    gdf["demand_source"]        = sources
+    gdf["aadt_estimated"]       = estimated
+    return gdf
+
+
+def _apply_buffer_demand(
+    roads_gdf: gpd.GeoDataFrame,
+    block_groups_gdf: gpd.GeoDataFrame,
+    config: dict,
+    analysis_crs: str = "EPSG:26910",
+) -> gpd.GeoDataFrame:
+    """
+    KLD-style buffer demand — informational only (stored as evacuation_demand_vph).
+    Not used in ΔT determination.
+    """
+    demand_cfg = config.get("demand", {})
+    buffer_m   = demand_cfg.get("buffer_radius_miles", 0.25) * 1609.344
+    res_mob    = demand_cfg.get("resident_mobilization", 0.57)
+    emp_mob    = demand_cfg.get("employee_mobilization_day", 1.00)
+    stu_mob    = demand_cfg.get("student_mobilization_day", 1.00)
+    vpu        = demand_cfg.get("vehicles_per_unit", config.get("vehicles_per_unit", 1.9))
+    emp_occ    = demand_cfg.get("employee_vehicle_occupancy", 1.0)
+
+    logger.info(
+        f"  Applying buffer demand (radius={buffer_m:.0f}m, "
+        f"res_mob={res_mob}, emp_mob={emp_mob}) — informational only..."
+    )
+
+    roads_proj = roads_gdf.to_crs(analysis_crs)
+    bg_proj = block_groups_gdf.to_crs(analysis_crs).copy()
+
+    for col in ("employee_count", "student_count"):
+        if col not in bg_proj.columns:
+            bg_proj[col] = 0.0
+        else:
+            bg_proj[col] = pd.to_numeric(bg_proj[col], errors="coerce").fillna(0)
+    bg_proj["housing_units_in_city"] = pd.to_numeric(
+        bg_proj["housing_units_in_city"], errors="coerce"
+    ).fillna(0)
+
+    bg_for_join = bg_proj[["geometry", "housing_units_in_city", "employee_count", "student_count"]].copy()
+
+    roads_buf = gpd.GeoDataFrame(
+        {"geometry": roads_proj.geometry.buffer(buffer_m), "_pos": range(len(roads_proj))},
+        crs=analysis_crs,
+    )
+
+    joined = gpd.sjoin(roads_buf[["geometry", "_pos"]], bg_for_join, how="left", predicate="intersects")
+    agg = joined.groupby("_pos")[["housing_units_in_city", "employee_count", "student_count"]].sum()
+    n = len(roads_gdf)
+    hu_arr  = agg["housing_units_in_city"].reindex(range(n), fill_value=0).values
+    emp_arr = agg["employee_count"].reindex(range(n), fill_value=0).values
+    stu_arr = agg["student_count"].reindex(range(n), fill_value=0).values
+
+    roads_gdf = roads_gdf.copy()
+    roads_gdf["catchment_hu"]        = hu_arr
+    roads_gdf["catchment_employees"] = emp_arr
+    roads_gdf["resident_demand_vph"] = hu_arr * vpu * res_mob
+    roads_gdf["employee_demand_vph"] = emp_arr * emp_occ * emp_mob
+    roads_gdf["student_demand_vph"]  = stu_arr * emp_occ * stu_mob
+    roads_gdf["baseline_demand_vph"] = (
+        roads_gdf["resident_demand_vph"]
+        + roads_gdf["employee_demand_vph"]
+        + roads_gdf["student_demand_vph"]
+    )
+    roads_gdf["demand_source"] = "census_buffer"
+
+    if "catchment_units" not in roads_gdf.columns:
+        roads_gdf["catchment_units"] = 0.0
+
+    return roads_gdf
+
+
+def _estimate_demand_from_road_class(road_type: str, capacity_vph: float) -> float:
+    utilization = {"freeway": 0.50, "multilane": 0.40, "two_lane": 0.25}
+    rate = utilization.get(road_type, 0.25)
+    return capacity_vph * rate
+
+
+# ---------------------------------------------------------------------------
+# Step 5: v/c Ratio and LOS (informational)
+# ---------------------------------------------------------------------------
+
+def calculate_vc_ratio(demand: float, capacity: float) -> float:
+    if capacity <= 0:
+        return 0.0
+    return demand / capacity
+
+
+def assign_los(vc: float, config: dict) -> str:
+    thresholds = config.get("los_thresholds", {
+        "A": 0.10, "B": 0.20, "C": 0.40, "D": 0.60, "E": 0.95,
+    })
+    for grade in ["A", "B", "C", "D", "E"]:
+        if vc <= thresholds.get(grade, 1.0):
+            return grade
+    return "F"
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Evacuation Route Identification + Bottleneck Tracking
+# ---------------------------------------------------------------------------
+
+def _identify_evacuation_routes(
+    roads_gdf: gpd.GeoDataFrame,
+    fhsz_gdf: gpd.GeoDataFrame,
+    boundary_gdf: gpd.GeoDataFrame,
+    config: dict,
+    analysis_crs: str,
+    block_groups_gdf: Optional[gpd.GeoDataFrame] = None,
+    data_dir: Optional[Path] = None,
+    exit_highway_types: set | None = None,
+    known_exit_nodes: list | None = None,
+) -> tuple[gpd.GeoDataFrame, list]:
+    """
+    Identify evacuation routes via Dijkstra network analysis.
+
+    v3.0 modifications:
+    - Dijkstra weights use effective_capacity_vph (not raw capacity) where available.
+      This routes around degraded segments in fire zones — more realistic.
+    - During path traversal, tracks bottleneck_segment per path:
+        bottleneck = argmin(effective_capacity_vph) along the path
+    - Returns list of EvacuationPath objects alongside the enriched roads_gdf.
+
+    known_exit_nodes (optional): explicit list of OSM node IDs to use as exit
+        handoff points, bypassing automatic boundary-proximity detection.
+        Use for non-municipal jurisdictions whose road network is clipped to the
+        district polygon by ox.graph_from_polygon() — exit nodes may be 100–500 m
+        inside the boundary and outside the default 50 m detection threshold.
+        Set via ``known_exit_nodes`` in the city YAML.
+
+    Returns:
+        (roads_gdf with is_evacuation_route/connectivity_score/catchment_units,
+         list[EvacuationPath])
+    """
+    roads_gdf["is_evacuation_route"] = False
+    roads_gdf["connectivity_score"]  = 0
+    roads_gdf["catchment_units"]     = 0.0
+
+    trigger_zones = config.get("fhsz", {}).get("trigger_zones", [2, 3])
+    max_origins   = int(config.get("census", {}).get("max_origins", 100))
+
+    # For non-FHSZ cities (fhsz_gdf empty or no trigger zones), fall through to
+    # block-group-based routing.  _resolve_origins() prefers block groups over
+    # FHSZ centroids, so passing an empty fhsz_proj is safe and correct.
+    # Roads retain effective_capacity_vph == capacity_vph (degradation=1.0 set above).
+    if fhsz_gdf.empty:
+        logger.info("  No FHSZ data — routing from all block groups (non-FHSZ city).")
+        fhsz_proj = gpd.GeoDataFrame(columns=["HAZ_CLASS", "geometry"], crs=analysis_crs)
+    else:
+        fhsz_trigger = fhsz_gdf[fhsz_gdf["HAZ_CLASS"].isin(trigger_zones)]
+        if fhsz_trigger.empty:
+            logger.info(
+                f"  No FHSZ zones {trigger_zones} — routing from all block groups."
+            )
+            fhsz_proj = gpd.GeoDataFrame(columns=["HAZ_CLASS", "geometry"], crs=analysis_crs)
+        else:
+            fhsz_proj = fhsz_trigger.to_crs(analysis_crs)
+
+    boundary_proj = boundary_gdf.to_crs(analysis_crs)
+
+    place_boundary = boundary_gdf.unary_union
+    logger.info("Building road graph for network analysis...")
+    try:
+        G = ox.graph_from_polygon(place_boundary, network_type="drive", simplify=True)
+    except Exception as e:
+        logger.error(f"Failed to build road graph: {e}")
+        return roads_gdf, []
+
+    G_proj  = ox.project_graph(G, to_crs=analysis_crs)
+    G_undir = G_proj.to_undirected()
+
+    # Persist projected graph for network-distance proximity queries (v3.3)
+    if data_dir is not None:
+        graph_path = Path(data_dir) / "graph.graphml"
+        graph_path.parent.mkdir(parents=True, exist_ok=True)
+        ox.save_graphml(G_proj, filepath=str(graph_path))
+        logger.info(f"  Saved road graph → {graph_path}")
+
+    if known_exit_nodes:
+        # City YAML supplied explicit exit node IDs — use them directly.
+        # This is required for non-municipal jurisdictions (fire districts, etc.)
+        # whose road network is clipped to the district polygon by
+        # ox.graph_from_polygon(): the last node on each primary road before the
+        # boundary clip is 100–500 m inside the boundary, beyond the default
+        # 50 m proximity threshold used by _find_exit_nodes().
+        exits = [n for n in known_exit_nodes if n in G_proj.nodes]
+        n_missing = len(known_exit_nodes) - len(exits)
+        if n_missing:
+            logger.warning(
+                f"  {n_missing} known_exit_nodes not found in graph — "
+                f"check that node IDs match the downloaded OSM network."
+            )
+        logger.info(
+            f"  Using {len(exits)} explicit exit nodes from city config "
+            f"(known_exit_nodes)."
+        )
+    else:
+        exits = _find_exit_nodes(G_proj, boundary_proj, exit_highway_types=exit_highway_types)
+    logger.info(f"  Found {len(exits)} regional-network exit nodes.")
+    if not exits:
+        logger.warning("  No exit nodes found — skipping route identification.")
+        return roads_gdf, []
+
+    # Persist exit nodes for project-origin Dijkstra routing (v3.4)
+    if data_dir is not None:
+        exit_nodes_path = Path(data_dir) / "exit_nodes.json"
+        exit_nodes_path.write_text(json.dumps(exits))
+        logger.info(f"  Saved {len(exits)} exit nodes → {exit_nodes_path}")
+
+    VIRTUAL_SINK = -999999
+    G_undir.add_node(VIRTUAL_SINK)
+    for exit_node in exits:
+        G_undir.add_edge(exit_node, VIRTUAL_SINK, length=0)
+
+    # Build osmid → effective_capacity lookup for bottleneck computation
+    # Map str(osmid) → effective_capacity_vph from the GDF
+    # HCM audit fields: lanes, speed, haz_class let reviewers verify HCM table lookup.
+    _ZONE_TO_HAZ_CLASS = {"vhfhsz": 3, "high_fhsz": 2, "moderate_fhsz": 1, "non_fhsz": 0}
+    osmid_to_eff_cap  = {}
+    osmid_to_fhsz     = {}
+    osmid_to_rtype    = {}
+    osmid_to_hcm      = {}
+    osmid_to_deg      = {}
+    osmid_to_name     = {}
+    osmid_to_lanes    = {}   # lane_count at segment (HCM audit)
+    osmid_to_speed    = {}   # speed_limit at segment (HCM two-lane row selection)
+    osmid_to_haz_class = {}  # raw CAL FIRE HAZ_CLASS integer (FHSZ audit)
+    for _, row in roads_gdf.iterrows():
+        oid  = row.get("osmid")
+        eff  = float(row.get("effective_capacity_vph", row.get("capacity_vph", 1000.0)))
+        fz   = str(row.get("fhsz_zone", "non_fhsz"))
+        rt   = str(row.get("road_type", "two_lane"))
+        hcm  = float(row.get("capacity_vph", 0.0))
+        dg   = float(row.get("hazard_degradation", 1.0))
+        nm   = str(row.get("name", ""))
+        lc   = int(row.get("lane_count", 0) or 0)
+        sp   = int(row.get("speed_limit", 0) or 0)
+        hc   = _ZONE_TO_HAZ_CLASS.get(fz, 0)
+        if oid is None:
+            continue
+        if isinstance(oid, list):
+            for o in oid:
+                key = str(o)
+                osmid_to_eff_cap[key]   = max(osmid_to_eff_cap.get(key, 0), eff)
+                osmid_to_fhsz[key]      = fz
+                osmid_to_rtype[key]     = rt
+                osmid_to_hcm[key]       = hcm
+                osmid_to_deg[key]       = dg
+                osmid_to_name[key]      = nm
+                osmid_to_lanes[key]     = lc
+                osmid_to_speed[key]     = sp
+                osmid_to_haz_class[key] = hc
+        else:
+            key = str(oid)
+            osmid_to_eff_cap[key]   = max(osmid_to_eff_cap.get(key, 0), eff)
+            osmid_to_fhsz[key]      = fz
+            osmid_to_rtype[key]     = rt
+            osmid_to_hcm[key]       = hcm
+            osmid_to_deg[key]       = dg
+            osmid_to_name[key]      = nm
+            osmid_to_lanes[key]     = lc
+            osmid_to_speed[key]     = sp
+            osmid_to_haz_class[key] = hc
+
+    origins, weights = _resolve_origins(
+        block_groups_gdf, fhsz_proj, analysis_crs, max_origins, config
+    )
+    if not origins:
+        logger.warning("  No origin points found — skipping route identification.")
+        return roads_gdf, []
+
+    total_weight = sum(weights)
+    using_housing_units = (
+        block_groups_gdf is not None
+        and not block_groups_gdf.empty
+        and total_weight > len(origins)
+    )
+    logger.info(
+        f"  Using {len(origins)} origin points "
+        f"({'housing-unit-weighted' if using_housing_units else 'uniform'})."
+    )
+
+    origin_xs    = [p.x for p in origins]
+    origin_ys    = [p.y for p in origins]
+    origin_nodes = ox.distance.nearest_nodes(G_proj, X=origin_xs, Y=origin_ys)
+
+    # Get block group GEOIDs if available
+    bg_geoids = []
+    if block_groups_gdf is not None and not block_groups_gdf.empty:
+        bg_sorted = block_groups_gdf.sort_values(
+            "housing_units_in_city", ascending=False
+        ).head(max_origins)
+        bg_geoids = bg_sorted.get("GEOID", bg_sorted.index.astype(str)).tolist()
+    bg_geoids = list(bg_geoids) + [""] * max(0, len(origin_nodes) - len(bg_geoids))
+
+    logger.info(f"  Computing shortest paths for {len(origin_nodes)} origins...")
+
+    edge_use_counts  = {}
+    edge_unit_weights = {}
+    evacuation_paths: list[EvacuationPath] = []
+
+    paths_found = 0
+    for i, (origin_node, weight, geoid) in enumerate(
+        zip(origin_nodes, weights, bg_geoids)
+    ):
+        try:
+            path_nodes = nx.shortest_path(
+                G_undir, origin_node, VIRTUAL_SINK, weight="length"
+            )
+            path_nodes = path_nodes[:-1]   # remove virtual sink
+            if len(path_nodes) < 2:
+                continue
+
+            # Collect edge osmids along this path
+            path_osmids: list[str] = []
+            exit_osmid = ""
+            for u, v in zip(path_nodes[:-1], path_nodes[1:]):
+                key = (min(u, v), max(u, v))
+                edge_use_counts[key]   = edge_use_counts.get(key, 0) + 1
+                edge_unit_weights[key] = edge_unit_weights.get(key, 0) + weight
+
+                # Get osmid for this edge
+                ed = G_proj.get_edge_data(u, v) or G_proj.get_edge_data(v, u)
+                if ed:
+                    for kd in (ed.values() if isinstance(ed, dict) else [ed]):
+                        oid = kd.get("osmid")
+                        if oid:
+                            oid_str = str(oid[0]) if isinstance(oid, list) else str(oid)
+                            path_osmids.append(oid_str)
+                            break
+
+                # Track last edge as exit
+                if v in exits or u in exits:
+                    exit_osmid = path_osmids[-1] if path_osmids else ""
+
+            if not path_osmids:
+                continue
+
+            # Find bottleneck: segment with min effective_capacity along this path
+            bottleneck_osmid = min(
+                path_osmids,
+                key=lambda o: osmid_to_eff_cap.get(o, 9999),
+                default=path_osmids[0],
+            )
+            eff_cap  = osmid_to_eff_cap.get(bottleneck_osmid, 0.0)
+            hcm_cap  = osmid_to_hcm.get(bottleneck_osmid, eff_cap)
+            deg      = osmid_to_deg.get(bottleneck_osmid, 1.0)
+            fz       = osmid_to_fhsz.get(bottleneck_osmid, "non_fhsz")
+            rt       = osmid_to_rtype.get(bottleneck_osmid, "two_lane")
+            nm       = osmid_to_name.get(bottleneck_osmid, "")
+            lc       = osmid_to_lanes.get(bottleneck_osmid, 0)
+            sp       = osmid_to_speed.get(bottleneck_osmid, 0)
+            hc       = osmid_to_haz_class.get(bottleneck_osmid, 0)
+
+            path_id = f"{geoid or i}_{exit_osmid or path_nodes[-1]}"
+
+            evac_path = EvacuationPath(
+                path_id=path_id,
+                origin_block_group=str(geoid),
+                exit_segment_osmid=exit_osmid,
+                bottleneck_osmid=bottleneck_osmid,
+                bottleneck_name=nm,
+                bottleneck_fhsz_zone=fz,
+                bottleneck_road_type=rt,
+                bottleneck_hcm_capacity_vph=hcm_cap,
+                bottleneck_hazard_degradation=deg,
+                bottleneck_effective_capacity_vph=eff_cap,
+                bottleneck_lane_count=lc,
+                bottleneck_speed_limit=sp,
+                bottleneck_haz_class=hc,
+                path_osmids=path_osmids,
+            )
+            evacuation_paths.append(evac_path)
+            paths_found += 1
+
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            continue
+        except Exception as e:
+            logger.debug(f"  Path computation error: {e}")
+            continue
+
+    logger.info(f"  Paths found: {paths_found}/{len(origin_nodes)}")
+
+    if not edge_use_counts:
+        logger.warning("  No evacuation paths found.")
+        return roads_gdf, []
+
+    evac_osmids_count = _build_evac_osmid_map(G_proj, edge_use_counts)
+    evac_osmids_units = _build_evac_osmid_map(G_proj, edge_unit_weights)
+
+    def _match(osmid_val, lookup):
+        if isinstance(osmid_val, list):
+            return any(str(o) in lookup for o in osmid_val)
+        return str(osmid_val) in lookup
+
+    def _score(osmid_val, lookup, default=0):
+        if isinstance(osmid_val, list):
+            return max((lookup.get(str(o), default) for o in osmid_val), default=default)
+        return lookup.get(str(osmid_val), default)
+
+    roads_gdf["is_evacuation_route"] = roads_gdf["osmid"].apply(
+        lambda o: _match(o, evac_osmids_count)
+    )
+    roads_gdf["connectivity_score"] = roads_gdf["osmid"].apply(
+        lambda o: _score(o, evac_osmids_count)
+    )
+
+    if using_housing_units:
+        roads_gdf["catchment_units"] = roads_gdf["osmid"].apply(
+            lambda o: _score(o, evac_osmids_units, default=0.0)
+        )
+    else:
+        roads_gdf["catchment_units"] = 0.0
+
+    logger.info(
+        f"  Marked {roads_gdf['is_evacuation_route'].sum()} evacuation route segments."
+    )
+    return roads_gdf, evacuation_paths
+
+
+def _resolve_origins(
+    block_groups_gdf: Optional[gpd.GeoDataFrame],
+    fhsz_proj: gpd.GeoDataFrame,
+    analysis_crs: str,
+    max_origins: int,
+    config: dict,
+) -> tuple[list, list]:
+    if block_groups_gdf is not None and not block_groups_gdf.empty:
+        if "housing_units_in_city" in block_groups_gdf.columns:
+            bg_proj = block_groups_gdf.to_crs(analysis_crs)
+            origins, weights = _sample_block_group_origins(bg_proj, max_origins)
+            if origins and sum(weights) > 0:
+                return origins, weights
+            logger.warning("  Block groups have no city housing units — falling back to FHSZ sampling.")
+
+    origins = _sample_fhsz_centroids(fhsz_proj, max_points=max_origins)
+    weights = [1.0] * len(origins)
+    return origins, weights
+
+
+def _sample_block_group_origins(
+    bg_proj: gpd.GeoDataFrame,
+    max_origins: int = 100,
+) -> tuple[list, list]:
+    city_bgs = bg_proj[bg_proj["housing_units_in_city"] > 0].copy()
+    if city_bgs.empty:
+        return [], []
+    city_bgs = city_bgs.sort_values("housing_units_in_city", ascending=False)
+    if len(city_bgs) > max_origins:
+        logger.info(
+            f"  {len(city_bgs)} block groups; using top {max_origins} by housing unit count."
+        )
+        city_bgs = city_bgs.head(max_origins)
+    points  = []
+    weights = []
+    for _, row in city_bgs.iterrows():
+        if row.geometry is None or row.geometry.is_empty:
+            continue
+        pt = row.geometry.representative_point()
+        points.append(pt)
+        weights.append(float(row["housing_units_in_city"]))
+    return points, weights
+
+
+def _sample_fhsz_centroids(fhsz_proj: gpd.GeoDataFrame, max_points: int = 100) -> list:
+    all_points = []
+    for geom in fhsz_proj.geometry:
+        if geom.is_empty:
+            continue
+        minx, miny, maxx, maxy = geom.bounds
+        width  = maxx - minx
+        height = abs(maxy - miny)
+        step   = max(min(width, height) / 3.0, 50)
+        xs = np.arange(minx + step / 2, maxx, step)
+        ys = np.arange(miny + step / 2, maxy, step)
+        for x in xs:
+            for y in ys:
+                pt = Point(x, y)
+                if geom.contains(pt):
+                    all_points.append(pt)
+        rep = geom.representative_point()
+        if not rep.is_empty:
+            all_points.append(rep)
+    if len(all_points) > max_points:
+        step = len(all_points) // max_points
+        all_points = all_points[::step][:max_points]
+    return all_points
+
+
+def _find_exit_nodes(
+    G_proj,
+    boundary_proj: gpd.GeoDataFrame,
+    exit_highway_types: set | None = None,
+) -> list:
+    """
+    Find OSM nodes that represent handoff points into the regional evacuation network.
+
+    v3.4 methodology: exit nodes are capacity handoff points — where the local
+    road network delivers evacuees into the regional system (freeway, trunk
+    highway, major arterial).  A fire does not respect city limits; the relevant
+    destination is entry into the regional network, not crossing a political line.
+
+    Algorithm:
+      1. Find all nodes within 50 m of the city boundary line.
+      2. Of those, keep only nodes connected to at least one edge whose OSM
+         highway type is in exit_highway_types (motorway, trunk, primary, etc.).
+      3. If step 2 yields no nodes, fall back to all boundary nodes (warning).
+      4. **Freeway on-ramp merge nodes (interior to city):** add any node where
+         at least one incident edge is motorway_link AND at least one incident
+         edge is motorway.  These are the merge points where a vehicle enters the
+         freeway mainline — a true capacity handoff regardless of city boundary
+         position.  Without this step, a freeway running through the city interior
+         (e.g. I-5 through Encinitas) has no reachable exit points, so Dijkstra
+         routes away from the freeway to distant boundary crossings instead.
+
+    Args:
+        G_proj:              Projected OSMnx graph for the city.
+        boundary_proj:       City boundary GeoDataFrame (projected CRS).
+        exit_highway_types:  Set of OSM highway tag values that qualify as
+                             regional network connections.  Defaults to
+                             motorway/motorway_link/trunk/trunk_link/primary/
+                             primary_link.
+
+    Returns:
+        Deduplicated list of OSM node IDs qualifying as exit nodes.
+    """
+    _DEFAULT_EXIT_TYPES = {
+        "motorway", "motorway_link",
+        "trunk",    "trunk_link",
+        "primary",  "primary_link",
+    }
+    if exit_highway_types is None:
+        exit_highway_types = _DEFAULT_EXIT_TYPES
+
+    boundary_geom = boundary_proj.unary_union.boundary
+    node_data     = [(n, d["x"], d["y"]) for n, d in G_proj.nodes(data=True)]
+
+    # Step 1: all nodes near the city boundary
+    boundary_nodes = [
+        node_id for node_id, x, y in node_data
+        if boundary_geom.distance(Point(x, y)) < 50
+    ]
+
+    if not boundary_nodes:
+        return []
+
+    # Step 2: filter to nodes connected to regional-network road types
+    regional_exits = []
+    for node_id in boundary_nodes:
+        # Check every edge incident to this node (in or out)
+        incident_edges = list(G_proj.edges(node_id, data=True)) + \
+                         list(G_proj.in_edges(node_id, data=True))
+        for _, _, data in incident_edges:
+            hw = data.get("highway", "")
+            hw_list = hw if isinstance(hw, list) else [hw]
+            if any(h in exit_highway_types for h in hw_list):
+                regional_exits.append(node_id)
+                break
+
+    if not regional_exits:
+        logger.warning(
+            f"  No boundary nodes on regional-network roads "
+            f"({sorted(exit_highway_types)}) — "
+            f"falling back to all {len(boundary_nodes)} boundary nodes. "
+            f"Consider adding 'secondary' to exit_highway_types in city config."
+        )
+        return boundary_nodes
+
+    # Step 4: freeway on-ramp merge nodes (interior to city).
+    # A merge node is where at least one edge is motorway_link (the on-ramp)
+    # and at least one other edge is motorway (the mainline).  These are valid
+    # capacity handoff points even when far from the city boundary.
+    exit_set = set(regional_exits)
+    onramp_merges = []
+    for node_id in G_proj.nodes():
+        if node_id in exit_set:
+            continue  # already counted
+        incident_edges = list(G_proj.edges(node_id, data=True)) + \
+                         list(G_proj.in_edges(node_id, data=True))
+        hw_types = set()
+        for _, _, data in incident_edges:
+            hw = data.get("highway", "")
+            for h in (hw if isinstance(hw, list) else [hw]):
+                hw_types.add(str(h))
+        if "motorway_link" in hw_types and "motorway" in hw_types:
+            onramp_merges.append(node_id)
+
+    if onramp_merges:
+        logger.info(
+            f"  Freeway on-ramp merge nodes: {len(onramp_merges)} added as "
+            f"interior exit points (motorway_link → motorway handoff)."
+        )
+
+    all_exits = list(exit_set) + onramp_merges
+    logger.info(
+        f"  Exit nodes: {len(regional_exits)} boundary + {len(onramp_merges)} "
+        f"freeway on-ramp = {len(all_exits)} total; "
+        f"types: {sorted(exit_highway_types)}"
+    )
+    return all_exits
+
+
+def _build_evac_osmid_map(G_proj, edge_scores: dict) -> dict:
+    osmid_map = {}
+    for (u, v), score in edge_scores.items():
+        edge_data = G_proj.get_edge_data(u, v) or G_proj.get_edge_data(v, u)
+        if edge_data is None:
+            continue
+        for key_data in (edge_data.values() if isinstance(edge_data, dict) else [edge_data]):
+            osmid = key_data.get("osmid")
+            if osmid is None:
+                continue
+            if isinstance(osmid, list):
+                for o in osmid:
+                    osmid_map[str(o)] = max(osmid_map.get(str(o), 0), score)
+            else:
+                osmid_map[str(osmid)] = max(osmid_map.get(str(osmid), 0), score)
+    return osmid_map
+
+
+# ---------------------------------------------------------------------------
+# Per-edge capacity bake (v4.13 parity fix)
+# ---------------------------------------------------------------------------
+# Eliminates the parallel osmid-keyed lookups in segment_index.py and
+# export.py that disagreed on missing-osmid defaults (0.0 vs 1000.0).
+# After this runs, every OSMnx edge carries its own eff_cap_vph, fhsz_zone,
+# hazard_degradation, hcm_capacity_vph, road_type, lane_count, speed_limit,
+# capacity_source.  Both wildland.py (Python engine) and export_graph_json
+# (JS engine source) read from G[u][v][k][attr] directly — single source
+# of truth.
+
+# Attribute names baked onto every OSMnx edge from the matching roads_gdf
+# row(s).  Missing-osmid edges get the defaults documented here:
+#   eff_cap_vph         → 0.0  (skipped by bottleneck argmin downstream)
+#   hcm_capacity_vph    → 0.0
+#   fhsz_zone           → "non_fhsz"
+#   hazard_degradation  → 1.0
+#   road_type           → "two_lane"
+#   lane_count          → 0
+#   speed_limit         → 0
+#   capacity_source     → "hcm"
+#   bottleneck_name     → ""
+_EDGE_BAKE_ATTRS = (
+    "eff_cap_vph", "hcm_capacity_vph", "fhsz_zone", "hazard_degradation",
+    "road_type", "lane_count", "speed_limit", "capacity_source",
+    "bottleneck_name",
+)
+
+
+def bake_capacity_onto_graph(G, roads_gdf: gpd.GeoDataFrame) -> int:
+    """Write per-edge capacity attributes onto every OSMnx edge in G.
+
+    For an OSMnx edge with osmid=[A, B, C] (a list from simplified ways),
+    finds all roads_gdf rows whose osmid matches any of {A, B, C} and
+    picks the row with the LOWEST eff_cap (bottleneck semantics — the
+    weakest sub-segment is what binds the edge's capacity).  The chosen
+    row's attributes are written onto the edge data.
+
+    Returns the number of edges enriched.  Edges with no matching
+    roads_gdf row get eff_cap_vph=0.0 so the bottleneck argmin in
+    wildland.py and the JS engine skip them with the
+    `or float('inf')` pattern.
+    """
+    # osmid → list of row indices in roads_gdf
+    osmid_to_rows: dict[str, list[int]] = {}
+    for idx, row in roads_gdf.iterrows():
+        oid = row.get("osmid")
+        if oid is None:
+            continue
+        for o in (oid if isinstance(oid, list) else [oid]):
+            osmid_to_rows.setdefault(str(o), []).append(idx)
+
+    def _row_attrs(idx) -> dict:
+        row = roads_gdf.iloc[idx]
+        eff_raw = row.get("effective_capacity_vph", row.get("capacity_vph", 0.0))
+        hcm_raw = row.get("capacity_vph", 0.0)
+        return {
+            "eff_cap_vph":         float(eff_raw or 0.0),
+            "hcm_capacity_vph":    float(hcm_raw or 0.0),
+            "fhsz_zone":           str(row.get("fhsz_zone", "non_fhsz")),
+            "hazard_degradation":  float(row.get("hazard_degradation", 1.0)),
+            "road_type":           str(row.get("road_type", "two_lane")),
+            "lane_count":          int(row.get("lane_count", 0) or 0),
+            "speed_limit":         int(row.get("speed_limit", 0) or 0),
+            "capacity_source":     str(row.get("capacity_source", "hcm")),
+            "bottleneck_name":     str(row.get("name", "") or ""),
+        }
+
+    baked = 0
+    missing = 0
+    for u, v, k, data in G.edges(keys=True, data=True):
+        oid = data.get("osmid")
+        if oid is None:
+            data["eff_cap_vph"] = 0.0
+            missing += 1
+            continue
+        osmids = [str(o) for o in (oid if isinstance(oid, list) else [oid])]
+        # Collect all matching row attrs
+        candidates = []
+        for o in osmids:
+            for idx in osmid_to_rows.get(o, []):
+                attrs = _row_attrs(idx)
+                if attrs["eff_cap_vph"] > 0:
+                    candidates.append(attrs)
+        if not candidates:
+            data["eff_cap_vph"] = 0.0
+            missing += 1
+            continue
+        # Bottleneck semantics: pick the row with the LOWEST eff_cap
+        chosen = min(candidates, key=lambda a: a["eff_cap_vph"])
+        for attr in _EDGE_BAKE_ATTRS:
+            data[attr] = chosen[attr]
+        baked += 1
+
+    logger.info(
+        f"  Per-edge capacity bake: {baked} edges enriched, "
+        f"{missing} edges with no matching roads_gdf row "
+        f"(eff_cap_vph=0 → skipped by bottleneck argmin)"
+    )
+    return baked

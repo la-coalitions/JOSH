@@ -1,0 +1,1369 @@
+<!--
+  Copyright (C) 2026 Thomas Gonzalez
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  This file is part of JOSH (Jurisdictional Objective Standards for Housing).
+  See LICENSE for full terms. See CONTRIBUTING.md for contributor license terms.
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JOSH — Fire Evacuation Capacity Analysis System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,800;1,400;1,600&family=Cormorant+SC:wght@400;600;700&family=EB+Garamond:ital,wght@0,400;0,500;1,400&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --hearth:    #1A2438;
+      --hearth-md: #243350;
+      --hearth-lt: #2e4168;
+      --ember:     #C49A28;
+      --ember-lt:  #DBB84A;
+      --linen:     #F5EFE2;
+      --parchment: #EDE4CF;
+      --walnut:    #3A2E1E;
+
+      --display: 'Playfair Display', Georgia, serif;
+      --sub:     'Cormorant SC', Georgia, serif;
+      --body:    'EB Garamond', Georgia, serif;
+      --ui:      'Source Sans 3', system-ui, sans-serif;
+
+      --t100: rgba(245,239,226,1.00);
+      --t65:  rgba(245,239,226,0.65);
+      --t40:  rgba(245,239,226,0.40);
+      --border: rgba(196,154,40,0.20);
+      --border-faint: rgba(196,154,40,0.10);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--body);
+      background: var(--hearth);
+      color: var(--linen);
+      line-height: 1.7;
+      font-size: 17px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* ── LAYOUT ─────────────────────────────────────────────── */
+    .container { max-width: 1120px; margin: 0 auto; padding: 0 40px; }
+
+    section { padding: 72px 0; }
+    section + section {
+      border-top: 1px solid;
+      border-image: linear-gradient(90deg, transparent 0%, rgba(196,154,40,0.25) 30%, rgba(196,154,40,0.25) 70%, transparent 100%) 1;
+    }
+
+    h2 {
+      font-family: var(--display);
+      font-size: clamp(26px, 3vw, 36px);
+      font-weight: 700;
+      color: var(--linen);
+      line-height: 1.15;
+      margin-bottom: 8px;
+      letter-spacing: -0.01em;
+    }
+    h2 em { font-style: italic; color: var(--ember); }
+
+    .section-lead {
+      font-family: var(--body);
+      font-style: italic;
+      font-size: 18px;
+      color: var(--t65);
+      margin-bottom: 36px;
+      max-width: 64ch;
+      line-height: 1.6;
+    }
+
+    /* ── EYEBROW ────────────────────────────────────────────── */
+    .eyebrow-flanked {
+      font-family: var(--ui);
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--linen);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .eyebrow-flanked::before,
+    .eyebrow-flanked::after {
+      content: "";
+      flex: 1;
+      min-width: 32px;
+      height: 1px;
+    }
+    .eyebrow-flanked::before { background: linear-gradient(90deg,  transparent, rgba(196,154,40,0.9)); }
+    .eyebrow-flanked::after  { background: linear-gradient(270deg, transparent, rgba(196,154,40,0.9)); }
+
+    .eyebrow-label {
+      font-family: var(--ui);
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--ember);
+      display: block;
+      margin-bottom: 14px;
+    }
+
+    .rule {
+      height: 1px;
+      background: linear-gradient(90deg, transparent 0%, rgba(196,154,40,0.6) 50%, transparent 100%);
+      margin: 20px 0 28px;
+      max-width: 72px;
+    }
+
+    /* ── HEADER ─────────────────────────────────────────────── */
+    header {
+      background: var(--hearth);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(8px);
+    }
+    .header-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 14px 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .wordmark { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+    .wordmark-seal { width: 38px; height: 38px; object-fit: contain; flex-shrink: 0; }
+    .wordmark-text { line-height: 1.2; }
+    .wordmark-name {
+      font-family: var(--sub);
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--linen);
+      display: block;
+      white-space: nowrap;
+      line-height: 1.3;
+    }
+    .wordmark-domain {
+      font-family: var(--ui);
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--ember);
+      display: block;
+      margin-top: 3px;
+    }
+
+    .header-nav {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .header-nav a {
+      font-family: var(--ui);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--t65);
+      text-decoration: none;
+      transition: color 0.15s;
+      white-space: nowrap;
+    }
+    .header-nav a:hover { color: var(--ember); }
+    .header-nav a.btn-nav {
+      background: var(--ember);
+      color: var(--hearth);
+      padding: 7px 16px;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+    .header-nav a.btn-nav:hover { background: var(--ember-lt); color: var(--hearth); }
+
+    /* ── HERO ───────────────────────────────────────────────── */
+    .hero { padding: 80px 0 72px; }
+    .hero-inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 40px;
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 64px;
+      align-items: center;
+    }
+    .hero-text .hero-eyebrow {
+      font-family: var(--ui);
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--ember);
+      margin-bottom: 20px;
+    }
+    .hero-text h2 {
+      font-family: var(--display);
+      font-size: clamp(30px, 3.5vw, 46px);
+      font-weight: 700;
+      color: var(--linen);
+      line-height: 1.1;
+      margin-bottom: 26px;
+    }
+    .hero-text h2 em { font-style: italic; color: var(--ember); }
+    .hero-text p {
+      font-family: var(--body);
+      font-size: 18px;
+      color: var(--t65);
+      max-width: 56ch;
+      margin-bottom: 16px;
+      line-height: 1.7;
+    }
+    .hero-text p strong { color: var(--linen); font-weight: 500; }
+
+    .hero-card {
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 32px 28px;
+    }
+    .hero-card .card-label {
+      font-family: var(--ui);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--t40);
+      margin-bottom: 20px;
+    }
+    .stat-row {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--border-faint);
+    }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-num {
+      font-family: var(--display);
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--linen);
+      min-width: 58px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .stat-desc { font-family: var(--ui); font-size: 15px; color: var(--t65); line-height: 1.4; }
+    .stat-source { font-family: var(--body); font-size: 14px; color: var(--t40); margin-top: 3px; font-style: italic; }
+
+    /* ── PRINCIPLE ──────────────────────────────────────────── */
+    .principle-inner {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 56px;
+      align-items: start;
+    }
+    blockquote.core-principle {
+      border-left: 3px solid var(--ember);
+      padding: 28px 30px;
+      background: var(--hearth-md);
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 24px;
+    }
+    blockquote.core-principle p {
+      font-family: var(--display);
+      font-size: 20px;
+      font-style: italic;
+      color: var(--linen);
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+    blockquote.core-principle cite {
+      font-family: var(--body);
+      font-size: 15px;
+      color: var(--t40);
+      font-style: normal;
+    }
+    .principle-body p {
+      font-family: var(--body);
+      font-size: 16px;
+      color: var(--t65);
+      margin-bottom: 16px;
+      line-height: 1.75;
+    }
+    .principle-body p strong { color: var(--linen); font-weight: 500; }
+
+    .principle-body-inline {
+      font-family: var(--body);
+      font-size: 16px;
+      color: #5A4A32;
+      line-height: 1.75;
+    }
+
+    /* ── THREE PILLARS ──────────────────────────────────────── */
+    .pillar-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+    .pillar-card {
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 32px 26px;
+    }
+    .pillar-card .pillar-icon { font-size: 26px; margin-bottom: 16px; display: block; }
+    .pillar-card h3 {
+      font-family: var(--display);
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--linen);
+      margin-bottom: 12px;
+      letter-spacing: -0.01em;
+    }
+    .pillar-card p { font-size: 16px; color: var(--t65); line-height: 1.7; }
+    .pillar-card ul { margin: 12px 0 0; padding: 0; list-style: none; font-size: 16px; color: var(--t65); }
+    .pillar-card ul li { padding: 5px 0 5px 18px; position: relative; line-height: 1.6; }
+    .pillar-card ul li::before {
+      content: "—";
+      position: absolute;
+      left: 0;
+      color: var(--ember);
+      font-family: var(--ui);
+      font-size: 11px;
+      top: 7px;
+    }
+
+    /* ── FOUR STEPS ─────────────────────────────────────────── */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(4,1fr);
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .step {
+      padding: 28px 22px;
+      border-right: 1px solid var(--border);
+      background: var(--hearth-md);
+    }
+    .step:last-child { border-right: none; }
+    .step-num {
+      width: 32px; height: 32px;
+      background: var(--ember);
+      color: var(--hearth);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--display);
+      font-size: 15px; font-weight: 800;
+      margin-bottom: 14px;
+    }
+    .step h4 {
+      font-family: var(--ui);
+      font-size: 14px; font-weight: 700;
+      color: var(--ember);
+      margin-bottom: 10px;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .step p { font-size: 16px; color: var(--t65); line-height: 1.7; }
+    .step .step-source { font-size: 14px; color: var(--t40); margin-top: 12px; font-style: italic; }
+
+    .calc-example {
+      margin-top: 32px;
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 28px 32px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 40px;
+      align-items: center;
+    }
+    .calc-example .calc-label {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em;
+      color: var(--t40);
+      margin-bottom: 14px;
+    }
+    .calc-example pre {
+      font-family: "Menlo","Consolas","Courier New",monospace;
+      font-size: 14px;
+      color: var(--t65);
+      white-space: pre;
+      line-height: 1.8;
+    }
+    .calc-example pre strong { color: var(--linen); }
+    .calc-result { text-align: right; flex-shrink: 0; }
+    .result-num {
+      font-family: var(--display);
+      font-size: 52px; font-weight: 700;
+      color: var(--linen); line-height: 1;
+    }
+    .result-unit {
+      font-family: var(--ui);
+      font-size: 13px; letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--t40); margin-top: 6px;
+    }
+    .result-verdict {
+      margin-top: 14px;
+      display: inline-block;
+      background: var(--ember);
+      color: var(--hearth);
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 6px 14px; border-radius: 3px;
+    }
+
+    /* ── SOURCES TABLE ──────────────────────────────────────── */
+    .sources-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .sources-table thead tr { background: rgba(196,154,40,0.10); border-bottom: 1px solid var(--border); }
+    .sources-table thead th {
+      padding: 14px 18px;
+      text-align: left;
+      font-family: var(--ui);
+      font-size: 12px; font-weight: 700;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--ember);
+    }
+    .sources-table tbody tr { border-top: 1px solid var(--border-faint); }
+    .sources-table tbody tr:hover { background: rgba(196,154,40,0.04); }
+    .sources-table tbody td { padding: 14px 18px; vertical-align: top; font-size: 16px; color: var(--t65); }
+    .sources-table td:first-child { font-weight: 500; color: var(--linen); }
+    .sources-table .publisher { font-size: 14px; color: var(--t40); margin-top: 3px; font-style: italic; }
+    .sources-table .use-badge {
+      display: inline-block;
+      background: rgba(196,154,40,0.12);
+      color: var(--ember);
+      font-family: var(--ui);
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 4px 10px; border-radius: 3px;
+      border: 1px solid rgba(196,154,40,0.28);
+      white-space: nowrap;
+    }
+
+    /* ── WHAT JOSH ADDS ─────────────────────────────────────── */
+    .adds-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: start; }
+    .adds-col h3 {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      color: var(--ember);
+      margin-bottom: 16px;
+      text-transform: uppercase; letter-spacing: 0.14em;
+    }
+    .adds-col ul { list-style: none; padding: 0; }
+    .adds-col ul li {
+      padding: 10px 0 10px 22px;
+      border-bottom: 1px solid var(--border-faint);
+      font-size: 16px; color: var(--t65);
+      position: relative; line-height: 1.6;
+    }
+    .adds-col ul li:last-child { border-bottom: none; }
+    .adds-col ul li::before {
+      content: "→";
+      position: absolute; left: 0;
+      color: var(--ember);
+      font-family: var(--ui); font-size: 12px;
+    }
+
+    .demo-card {
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 36px 30px;
+    }
+    .demo-label {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--t40); margin-bottom: 12px;
+    }
+    .demo-card h3 {
+      font-family: var(--display);
+      font-size: 20px; font-weight: 700;
+      color: var(--linen);
+      margin-bottom: 12px; line-height: 1.25; letter-spacing: -0.01em;
+    }
+    .demo-card p { font-size: 16px; color: var(--t65); margin-bottom: 24px; line-height: 1.7; }
+    .demo-card .tier-row {
+      display: flex; align-items: center; gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border-faint);
+      font-family: var(--ui); font-size: 14px; color: var(--t65);
+    }
+    .demo-card .tier-row:last-of-type { border-bottom: none; margin-bottom: 24px; }
+    .demo-btns { display: flex; gap: 12px; flex-wrap: wrap; }
+
+    /* ── BADGES ─────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 4px 10px; border-radius: 3px;
+      font-family: var(--ui);
+      font-size: 11px; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge-min  { background: rgba(26,127,60,0.15);  color: #6fcf97; border: 1px solid rgba(111,207,151,0.25); }
+    .badge-cond { background: rgba(196,154,40,0.15); color: var(--ember); border: 1px solid rgba(196,154,40,0.28); }
+    .badge-disc { background: rgba(235,87,87,0.15);  color: #eb5757; border: 1px solid rgba(235,87,87,0.25); }
+
+    /* ── BUTTONS ────────────────────────────────────────────── */
+    .btn {
+      display: inline-block;
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      text-decoration: none;
+      padding: 13px 26px; border-radius: 4px;
+      transition: all 0.15s;
+    }
+    .btn-primary { background: var(--ember); color: var(--hearth); }
+    .btn-primary:hover { background: var(--ember-lt); transform: translateY(-1px); }
+    .btn-secondary {
+      background: transparent;
+      color: var(--t65);
+      border: 1.5px solid rgba(196,154,40,0.30);
+    }
+    .btn-secondary:hover { border-color: var(--ember); color: var(--ember); }
+    .btn-outline {
+      display: inline-block;
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      text-decoration: none;
+      padding: 13px 26px; border-radius: 4px;
+      background: transparent;
+      color: var(--linen);
+      border: 1.5px solid rgba(245,239,226,0.25);
+      transition: all 0.15s;
+    }
+    .btn-outline:hover { border-color: var(--ember); color: var(--ember); }
+
+    /* ── ADOPTION ───────────────────────────────────────────── */
+    .tier-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 20px; }
+    .tier-card {
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 28px 22px;
+    }
+    .tier-card .tier-num {
+      width: 30px; height: 30px;
+      background: var(--ember); color: var(--hearth);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-family: var(--display); font-size: 14px; font-weight: 800;
+      margin-bottom: 14px;
+    }
+    .tier-card h3 {
+      font-family: var(--display);
+      font-size: 18px; font-weight: 700;
+      color: var(--linen);
+      margin-bottom: 6px; letter-spacing: -0.01em;
+    }
+    .tier-card .tier-action {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.1em;
+      color: var(--ember); margin-bottom: 12px;
+    }
+    .tier-card p { font-size: 16px; color: var(--t65); line-height: 1.7; }
+    .tier-card .tier-note { margin-top: 12px; font-size: 14px; color: var(--t40); font-style: italic; }
+
+    /* ── DOCUMENT LIBRARY ───────────────────────────────────── */
+    .doc-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 14px; }
+    .doc-card {
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 22px 24px;
+      text-decoration: none; color: inherit;
+      display: block;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .doc-card:hover { border-color: var(--ember); box-shadow: 0 0 0 1px rgba(196,154,40,0.18); }
+    .doc-card .doc-audience {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.12em;
+      color: var(--ember); margin-bottom: 8px;
+    }
+    .doc-card h3 {
+      font-family: var(--display);
+      font-size: 20px; font-weight: 700;
+      color: var(--linen); margin-bottom: 8px; letter-spacing: -0.01em;
+    }
+    .doc-card p { font-size: 16px; color: var(--t65); line-height: 1.6; }
+
+    /* ── OPEN SOURCE ────────────────────────────────────────── */
+    .oss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: start; }
+    .oss-body p { font-size: 16px; color: var(--t65); margin-bottom: 16px; line-height: 1.75; }
+    .oss-card {
+      background: var(--hearth-md);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 30px 26px;
+    }
+    .oss-card .oss-label {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--t40); margin-bottom: 18px;
+    }
+    .oss-row {
+      display: flex; gap: 14px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border-faint);
+      font-size: 16px; color: var(--t65);
+      align-items: baseline;
+    }
+    .oss-row:last-child { border-bottom: none; }
+    .oss-key {
+      font-family: var(--ui);
+      font-size: 13px; font-weight: 700;
+      color: var(--ember);
+      min-width: 100px; flex-shrink: 0;
+      letter-spacing: 0.08em; text-transform: uppercase;
+    }
+    .oss-btns { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 24px; }
+
+    /* ── FOOTER ─────────────────────────────────────────────── */
+    footer {
+      background: var(--hearth-md);
+      color: var(--t65);
+      padding: 48px 0 40px;
+      border-top: 1px solid var(--border);
+    }
+    .footer-inner {
+      max-width: 1120px; margin: 0 auto; padding: 0 40px;
+      display: grid; grid-template-columns: 1fr auto; gap: 48px; align-items: start;
+    }
+    .footer-brand {
+      font-family: var(--sub);
+      font-size: 16px; font-weight: 700;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--linen); margin-bottom: 10px;
+    }
+    .footer-text { font-size: 16px; line-height: 1.85; color: var(--t40); max-width: 520px; }
+    .footer-text a { color: var(--t65); text-decoration: underline; text-underline-offset: 3px; }
+    .footer-text a:hover { color: var(--ember); }
+    .footer-citations {
+      font-family: var(--ui);
+      font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+      line-height: 2.1; text-align: right; white-space: nowrap; color: var(--t40);
+    }
+
+    /* ── LINEN SECTIONS ─────────────────────────────────────── */
+    section.bg-linen {
+      background: var(--linen);
+      color: var(--hearth);
+    }
+    section.bg-parchment {
+      background: var(--parchment);
+      color: var(--hearth);
+    }
+    section.bg-linen h2,
+    section.bg-parchment h2 { color: var(--hearth); }
+    section.bg-linen h2 em,
+    section.bg-parchment h2 em { color: var(--ember); }
+    section.bg-linen .section-lead,
+    section.bg-parchment .section-lead { color: #5A4A32; }
+    section.bg-linen .eyebrow-flanked,
+    section.bg-parchment .eyebrow-flanked { color: var(--ember); }
+    section.bg-linen .rule,
+    section.bg-parchment .rule { opacity: 0.7; }
+
+    /* Cards on linen → white surface */
+    section.bg-linen .pillar-card,
+    section.bg-linen .tier-card,
+    section.bg-linen .demo-card,
+    section.bg-linen .oss-card,
+    section.bg-parchment .tier-card,
+    section.bg-parchment .doc-card {
+      background: #ffffff;
+      border-color: #DFD3B4;
+    }
+    section.bg-linen .pillar-card h3,
+    section.bg-linen .tier-card h3,
+    section.bg-linen .demo-card h3,
+    section.bg-linen .oss-card .oss-label,
+    section.bg-parchment .tier-card h3,
+    section.bg-parchment .doc-card h3 { color: var(--hearth); }
+    section.bg-linen .pillar-card p,
+    section.bg-linen .tier-card p,
+    section.bg-linen .demo-card p,
+    section.bg-parchment .tier-card p,
+    section.bg-parchment .doc-card p { color: #5A4A32; }
+    section.bg-linen .pillar-card ul li,
+    section.bg-parchment .tier-card .tier-note { color: #8A7458; }
+    section.bg-linen .tier-card .tier-action,
+    section.bg-parchment .tier-card .tier-action,
+    section.bg-linen .doc-card .doc-audience,
+    section.bg-parchment .doc-card .doc-audience { color: var(--ember); }
+
+    /* Doc cards on linen */
+    section.bg-linen .doc-card {
+      background: #ffffff;
+      border-color: #DFD3B4;
+    }
+    section.bg-linen .doc-card:hover { border-color: var(--ember); }
+    section.bg-linen .doc-card h3 { color: var(--hearth); }
+    section.bg-linen .doc-card p { color: #5A4A32; }
+
+    /* Principle section on linen */
+    section.bg-linen blockquote.core-principle {
+      background: #ffffff;
+      border-left-color: var(--ember);
+    }
+    section.bg-linen blockquote.core-principle p { color: var(--hearth); }
+    section.bg-linen blockquote.core-principle cite { color: #8A7458; }
+    section.bg-linen .principle-body p { color: #5A4A32; }
+    section.bg-linen .principle-body p strong { color: var(--hearth); font-weight: 600; }
+
+    /* Steps on linen */
+    section.bg-linen .steps-grid { border-color: #DFD3B4; }
+    section.bg-linen .step { background: #ffffff; border-right-color: #DFD3B4; }
+    section.bg-linen .step h4 { color: var(--ember); }
+    section.bg-linen .step p { color: #5A4A32; }
+    section.bg-linen .step .step-source { color: #8A7458; }
+    section.bg-linen .calc-example { background: #ffffff; border-color: #DFD3B4; }
+    section.bg-linen .calc-label { color: #8A7458; }
+    section.bg-linen .calc-example pre { color: #5A4A32; }
+    section.bg-linen .calc-example pre strong { color: var(--hearth); }
+    section.bg-linen .result-num { color: var(--hearth); }
+    section.bg-linen .result-unit { color: #8A7458; }
+
+    /* What JOSH Adds on linen */
+    section.bg-linen .adds-col h3 { color: var(--ember); }
+    section.bg-linen .adds-col ul li { color: #5A4A32; border-bottom-color: rgba(58,46,30,0.12); }
+    section.bg-linen .adds-col ul li::before { color: var(--ember); }
+    section.bg-linen .demo-label { color: #8A7458; }
+    section.bg-linen .demo-card .tier-row { color: #5A4A32; border-bottom-color: rgba(58,46,30,0.12); }
+    section.bg-linen .demo-btns .btn-secondary {
+      color: #5A4A32;
+      border-color: rgba(58,46,30,0.25);
+    }
+    section.bg-linen .demo-btns .btn-secondary:hover { border-color: var(--ember); color: var(--ember); }
+
+    /* OSS section on linen */
+    section.bg-linen .oss-body p { color: #5A4A32; }
+    section.bg-linen .oss-row { color: #5A4A32; border-bottom-color: rgba(58,46,30,0.12); }
+    section.bg-linen .oss-key { color: var(--ember); }
+    section.bg-linen .oss-card .oss-label { color: #8A7458; }
+    section.bg-linen .btn-outline {
+      color: var(--hearth);
+      border-color: rgba(26,36,56,0.25);
+    }
+    section.bg-linen .btn-outline:hover { border-color: var(--ember); color: var(--ember); }
+
+    /* ── PRINT ──────────────────────────────────────────────── */
+    @media print {
+      header { position: static; }
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .header-nav { display: none; }
+    }
+
+    /* ── RESPONSIVE ─────────────────────────────────────────── */
+    @media (max-width: 860px) {
+      .container { padding: 0 24px; }
+      section { padding: 52px 0; }
+      .header-inner { padding: 12px 24px; }
+      .header-nav { display: none; }
+      .hero-inner { padding: 0 24px; grid-template-columns: 1fr; }
+      .hero-card { display: none; }
+      .principle-inner,
+      .adds-grid,
+      .oss-grid { grid-template-columns: 1fr; gap: 32px; }
+      .pillar-grid,
+      .tier-grid { grid-template-columns: 1fr; }
+      .doc-grid { grid-template-columns: 1fr; }
+      .steps-grid { grid-template-columns: 1fr 1fr; }
+      .calc-example { grid-template-columns: 1fr; }
+      .calc-result { text-align: left; }
+      .footer-inner { grid-template-columns: 1fr; }
+      .footer-citations { text-align: left; white-space: normal; }
+    }
+    @media (max-width: 540px) {
+      .steps-grid { grid-template-columns: 1fr; }
+      .hero-text h2 { font-size: 28px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── HEADER ──────────────────────────────────────────────────── -->
+<header>
+  <div class="header-inner">
+    <a href="https://californiastewardship.org" class="wordmark" aria-label="California Stewardship Alliance — home">
+      <img src="seal.png" alt="" class="wordmark-seal" loading="eager" decoding="async">
+      <div class="wordmark-text">
+        <span class="wordmark-name">California Stewardship Alliance</span>
+        <span class="wordmark-domain">californiastewardship.org</span>
+      </div>
+    </a>
+    <nav class="header-nav">
+      <a href="#principle">The Principle</a>
+      <a href="#methodology">Methodology</a>
+      <a href="#adoption">Adoption</a>
+      <a href="#documents">Documents</a>
+      <a href="#software">Open Source</a>
+      <a class="btn-nav" href="berkeley/analysis_map.html">Live Demo &rarr;</a>
+    </nav>
+  </div>
+</header>
+
+<!-- ── HERO ────────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="hero-inner">
+    <div class="hero-text">
+      <p class="hero-eyebrow">JOSH &mdash; Jurisdictional Objective Standards for Housing</p>
+      <h2>The power of JOSH is not <em>the software.</em></h2>
+      <p>
+        JOSH is a <strong>first-principles calculator</strong> built entirely from established,
+        credentialed expert standards and publicly verified data. Every number it produces can be
+        reproduced by any licensed engineer with a spreadsheet. The software offers one thing:
+        <strong>speed</strong> — turning a calculation that once took weeks into an instant result
+        with a documented, hand-auditable audit trail.
+      </p>
+      <p>
+        The methodology is not novel. Every input is published. Every threshold is derived from
+        arithmetic. The city does not adopt a JOSH opinion — it adopts the standards JOSH
+        mechanically applies.
+      </p>
+      <p>
+        That distinction is what makes JOSH <strong>constitutionally sound</strong>: the city is not exercising discretion. It is implementing the law.
+      </p>
+    </div>
+    <div class="hero-card" aria-hidden="true">
+      <div class="card-label">Key Parameters &amp; Sources</div>
+      <div class="stat-row">
+        <div class="stat-num">1.9</div>
+        <div>
+          <div class="stat-desc">Vehicles per household</div>
+          <div class="stat-source">U.S. Census ACS Table B25044</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-num">90%</div>
+        <div>
+          <div class="stat-desc">Community mass-evacuation mobilization rate</div>
+          <div class="stat-source">NFPA 1660 (2024) / NFPA 1616 (2020)</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-num">35%</div>
+        <div>
+          <div class="stat-desc">Road capacity (VHFHSZ, fire conditions)</div>
+          <div class="stat-source">Composite engineering judgment; HCM Ch. 11 weather CAFs + NIST TN 2135 (review pending)</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-num">45<span style="font-size:14px;font-weight:400;font-family:var(--ui)"> min</span></div>
+        <div>
+          <div class="stat-desc">Escape window (VHFHSZ)</div>
+          <div class="stat-source">NIST Technical Note 2135 — Camp Fire</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-num">5%</div>
+        <div>
+          <div class="stat-desc">Max project share of escape window</div>
+          <div class="stat-source">Standard engineering significance threshold</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── THE PRINCIPLE ────────────────────────────────────────────── -->
+<section id="principle" class="bg-linen">
+  <div class="container">
+    <div class="eyebrow-flanked">The Principle</div>
+    <h2>One rule. <em>Applied at city scale.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">One rule governs fire marshal occupancy limits in every occupied building in California. JOSH applies the same rule to the roads those buildings depend on.</p>
+    <div class="principle-inner">
+      <div>
+        <blockquote class="core-principle">
+          <p>"You cannot put more people behind an exit than the exit can handle in an emergency. Measure the exits. Count the people. Do the math."</p>
+          <cite>— The same principle a fire marshal applies when posting a Maximum Occupancy sign, applied at city scale to evacuation roads.</cite>
+        </blockquote>
+        <p class="principle-body-inline">
+          A fire marshal does not ask who is already in the nightclub before deciding whether 50 more
+          people can safely enter. The question is whether those 50 people can get through the doors
+          fast enough in an emergency. The answer depends on the doors and the 50 people. It does not
+          depend on who else is in the room.
+        </p>
+        <p class="principle-body-inline" style="margin-top:14px;">
+          A wildfire evacuation road is a door. A housing project is a group of people asking to drive
+          through it. JOSH measures whether those people can get through in time. The road either has
+          the capacity or it does not. That is a physical fact — measured in minutes, from published
+          data, using arithmetic.
+        </p>
+      </div>
+      <div class="principle-body">
+        <p><strong>Why this principle is legally durable:</strong></p>
+        <p>
+          Fire marshal occupancy limits are the most litigation-tested life safety standards in
+          American law. Courts have upheld them uniformly because they rest on a physical reality:
+          exits have a fixed throughput; people have a fixed size; time is time.
+        </p>
+        <p>
+          JOSH applies the same logic at city scale. The inputs change — roads instead of corridors,
+          vehicles instead of people on foot, fire hazard zones instead of kitchen fires — but the
+          structure of the argument is identical, and it has been accepted by courts for over a century.
+        </p>
+        <p>
+          After the 2018 Camp Fire killed 85 people in Paradise, California, the National Institute
+          of Standards and Technology documented, minute by minute, exactly how long residents had
+          before the fire front arrived. That timeline is now the empirical foundation for JOSH's
+          escape-window thresholds. There is no opinion in that number — it is a federal agency's
+          post-disaster forensic finding.
+        </p>
+        <p>
+          The California Legislature recognized this when it passed AB&nbsp;747 in 2019, placing
+          evacuation capacity analysis in the Safety Element — not CEQA, not the Circulation Element.
+          It is a life safety question. JOSH implements what the Legislature directed.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── THREE PILLARS ────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="eyebrow-flanked">Three Constitutional Foundations</div>
+    <h2>Grounded in <em>constitutional authority</em>.</h2>
+    <div class="rule"></div>
+    <p class="section-lead">JOSH implements what the California Legislature enacted in AB 747 and what the Housing Accountability Act expressly preserves. Every architectural decision traces to one principle: every input, every threshold, every output derives from the published standards the legislature intended cities to use — not from city discretion.</p>
+    <div class="pillar-grid">
+      <div class="pillar-card">
+        <span class="pillar-icon">📐</span>
+        <h3>Nothing Novel</h3>
+        <p>Every standard JOSH applies existed before JOSH was written. No input was invented by the city, by California Stewardship, or by any consultant. The methodology is an assembly of published, credentialed expert sources:</p>
+        <ul>
+          <li>Highway Capacity Manual, 7th Ed. (2022)</li>
+          <li>NFPA 1660 (2024) / NFPA 1616 (2020) &mdash; community mass evacuation</li>
+          <li>NFPA 101 Life Safety Code (2024 CA ed.) &mdash; building egress only</li>
+          <li>NIST Technical Note 2135 (Camp Fire)</li>
+          <li>Cal Fire FHSZ designations (Gov. Code §51175)</li>
+          <li>2025 California WUI Code (CWUIC) &mdash; State Fire Marshal</li>
+          <li>U.S. Census ACS (Tables B25001, B25044)</li>
+          <li>International Building Code, 2024 Ch. 10 (egress)</li>
+        </ul>
+      </div>
+      <div class="pillar-card">
+        <span class="pillar-icon">🔍</span>
+        <h3>Publicly Verifiable</h3>
+        <p>Every number JOSH uses is available to the public, free of charge, from the agency that published it. A developer's engineer, a plaintiff's attorney, or a judge's clerk can pull the same source document and verify every input.</p>
+        <p style="margin-top:12px;">No proprietary model. No black-box weighting. No expert opinion that can be cross-examined. The data speaks for itself because it already has — in every state DOT, in every building department, in every fire marshal's office in the country.</p>
+      </div>
+      <div class="pillar-card">
+        <span class="pillar-icon">✏️</span>
+        <h3>Hand-Auditable</h3>
+        <p>Every determination JOSH produces comes with a plain-text audit trail. The full calculation — every input, every intermediate result, every threshold comparison — fits on one printed page.</p>
+        <p style="margin-top:12px;">Any party — the developer, the city attorney, the court — can read the audit trail and verify every line without calling an expert witness. The calculation is four arithmetic operations. The city is not asking anyone to trust a model; it is showing its work, because the work is the law.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOUR-STEP METHODOLOGY ────────────────────────────────────── -->
+<section id="methodology" class="bg-linen">
+  <div class="container">
+    <div class="eyebrow-flanked">The Methodology</div>
+    <h2>Four steps. <em>All public data.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">One number: how many minutes does this project add to evacuation clearance time? Every step uses only published national standards or federal data. No step involves anyone's opinion.</p>
+    <div class="steps-grid">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h4>Count the Cars</h4>
+        <p>Multiply the project's housing units by 1.9 vehicles per household (Census ACS B25044, CA statewide all-household average — already includes zero-vehicle households), then apply the 90% community mass-evacuation mobilization factor from NFPA 1660:2024 (which consolidates NFPA 1616:2020 *Mass Evacuation, Sheltering, and Re-entry Programs*) — the national fire-protection standard for community-scale evacuation design.</p>
+        <p class="step-source">Sources: U.S. Census ACS B25044 &bull; NFPA 1660 (2024) / NFPA 1616 (2020) community mass-evacuation design basis &bull; Roberson et al. (2012) CA empirical validation</p>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h4>Find the Weakest Link</h4>
+        <p>Examine every road between the project and safety. Each road's capacity is taken from the Highway Capacity Manual (HCM 2022) — the national standard used by every state DOT. If a road passes through a Cal Fire Fire Hazard Severity Zone, its capacity is reduced by a composite engineering-judgment factor anchored against the HCM 2022 Ch. 11 worst-case weather Capacity Adjustment Factors and NIST TN 2135 Camp Fire empirical observations (independent traffic-engineering review pending per Fire Science Consulting LLC, May 2026). The road with the lowest effective capacity is the bottleneck.</p>
+        <p class="step-source">Sources: HCM 2022, 7th Ed. (TRB) &bull; Cal Fire FHSZ (Gov. Code §51175) &bull; NIST TN 2135 Camp Fire timeline &bull; FSC May 2026 review (pending)</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h4>Add Building Egress Time</h4>
+        <p>A family on the sixth floor must walk down six flights of stairs before reaching a car. NFPA 101 (Life Safety Code, 2024 California edition) and the International Building Code (IBC 2024, Ch. 10 &mdash; Means of Egress) provide published methods to calculate this delay: 1.5 minutes per story for buildings over four stories, capped at 12 minutes. Single-family and low-rise multifamily projects receive no penalty.</p>
+        <p class="step-source">Sources: NFPA 101 (2024 CA ed.) &bull; IBC 2024 Ch. 10</p>
+      </div>
+      <div class="step">
+        <div class="step-num">4</div>
+        <h4>Divide &amp; Compare</h4>
+        <p>Divide project vehicles by bottleneck capacity. Convert to minutes. Add any egress penalty. Compare the result to the zone-specific threshold: 5% of the escape window documented by NIST for the project's fire hazard zone. That percentage is the one policy value the city adopts — everything else is arithmetic from published sources.</p>
+        <p class="step-source">Sources: NIST TN 2135 (escape windows) &bull; City resolution (5% share)</p>
+      </div>
+    </div>
+
+    <div class="calc-example">
+      <div>
+        <div class="calc-label">Example: 45-unit project on a canyon road in a VHFHSZ zone</div>
+        <pre><strong>Step 1 — Project vehicles:</strong>   45 units × 1.9 veh/HH × 90% = <strong>77 vehicles</strong>
+<strong>Step 2 — Bottleneck capacity:</strong>  1,350 vph (two-lane, 30 mph) × 35% (VHFHSZ) = <strong>472 vph</strong>
+<strong>Step 3 — Egress penalty:</strong>       3-story building → <strong>0 min</strong> (below 4-story threshold)
+<strong>Step 4 — ΔT:</strong>                  (77 ÷ 472) × 60 + 0 = <strong>9.8 minutes</strong>
+<strong>Threshold (VHFHSZ):</strong>           45 min × 5% = <strong>2.25 minutes</strong></pre>
+      </div>
+      <div class="calc-result">
+        <div class="result-num">9.8</div>
+        <div class="result-unit">minutes added</div>
+        <div class="result-verdict">Exceeds threshold &rarr; Discretionary</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── SOURCES TABLE ─────────────────────────────────────────────── -->
+<section>
+  <div class="container">
+    <div class="eyebrow-flanked">Source Documentation</div>
+    <h2>Where every number <em>comes from.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">No input was chosen by the city, by California Stewardship, or by any consultant. Every value is traceable to a specific exhibit, table, or dataset published by a credentialed national authority.</p>
+    <table class="sources-table">
+      <thead>
+        <tr>
+          <th>Standard / Dataset</th>
+          <th>Publisher</th>
+          <th>What JOSH Uses It For</th>
+          <th>JOSH Parameter</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>
+            Highway Capacity Manual, 7th Ed. (HCM 2022)
+            <div class="publisher">Ch. 11 weather CAFs (Ex. 11-20); Ch. 12 base capacity (Ex. 12-6, 12-7); Ch. 15 two-lane highways</div>
+          </td>
+          <td>Transportation Research Board<br><span class="publisher">National Academies of Sciences</span></td>
+          <td>Road base capacity (pc/h/lane) by road type and speed. <em>Note (May 2026):</em> the FHSZ degradation factors are a composite engineering-judgment factor anchored against HCM Ch. 11 worst-case weather CAFs + NIST TN 2135, not a direct HCM exhibit; independent traffic-engineering review pending per Fire Science Consulting LLC.</td>
+          <td><span class="use-badge">Road capacity &amp; degradation*</span><div class="publisher" style="margin-top:8px;font-size:11px;line-height:1.4;">*&nbsp;FHSZ degradation factor pending independent traffic-engineering review (Fire Science Consulting LLC, May 2026).</div></td>
+        </tr>
+        <tr>
+          <td>
+            NFPA 1660 &mdash; <em>Standard for Emergency, Continuity, and Crisis Management: Preparedness, Response, and Recovery</em>
+            <div class="publisher">2024 edition; consolidates NFPA 1616:2020 <em>Mass Evacuation, Sheltering, and Re-entry Programs</em></div>
+          </td>
+          <td>National Fire Protection Association</td>
+          <td>90% community mass-evacuation mobilization rate (design basis: full evacuation adjusted for ~10% zero-vehicle HHs per Census ACS B25044). Empirical California validation per Roberson et al. (2012).</td>
+          <td><span class="use-badge">Mobilization rate</span></td>
+        </tr>
+        <tr>
+          <td>
+            NFPA 101 &mdash; Life Safety Code
+            <div class="publisher">2024 California edition (Ch. 7); IBC 2024 Ch. 10 (Means of Egress)</div>
+          </td>
+          <td>National Fire Protection Association; International Code Council</td>
+          <td>Building egress time calculation for structures &ge; 4 stories (1.5 min/story, capped at 12 min). <em>Note:</em> NFPA 101 governs pedestrian egress inside buildings; it is <strong>not</strong> the source for the community mass-evacuation mobilization rate (see NFPA 1660 / 1616 above).</td>
+          <td><span class="use-badge">Egress penalty (high-rise)</span></td>
+        </tr>
+        <tr>
+          <td>
+            2025 California Wildland-Urban Interface Code (CWUIC)
+            <div class="publisher">Adopted by State Fire Marshal; supersedes CFC Ch. 49 and CBC Ch. 7A</div>
+          </td>
+          <td>California Building Standards Commission<br><span class="publisher">CWUIC adopts IWUIC 2024 with CA amendments</span></td>
+          <td>Operative California WUI code. JOSH measures civilian outbound capacity only; concurrent emergency-apparatus inbound access per <strong>CCR 1273.00</strong> requires separate analysis. JOSH positioned as a screening tool consistent with <strong>CWUIC Appendix C §C101.6</strong>, not a standalone permit-denial instrument.</td>
+          <td><span class="use-badge">Scope &amp; limitations</span></td>
+        </tr>
+        <tr>
+          <td>
+            NIST Technical Note 2135 (2021)
+            <div class="publisher">Camp Fire Minute-by-Minute Timeline</div>
+          </td>
+          <td>National Institute of Standards and Technology<br><span class="publisher">U.S. Department of Commerce</span></td>
+          <td>Safe egress windows by hazard zone: VHFHSZ = 45 min, High = 90 min, Moderate/Non = 120 min</td>
+          <td><span class="use-badge">Escape-window thresholds</span></td>
+        </tr>
+        <tr>
+          <td>
+            Fire Hazard Severity Zone (FHSZ) Maps
+            <div class="publisher">Gov. Code §51175–51189</div>
+          </td>
+          <td>Cal Fire (State of California)<br><span class="publisher">Office of the State Fire Marshal</span></td>
+          <td>Determines which road segments receive capacity degradation; sets escape-window zone for the project site</td>
+          <td><span class="use-badge">Road degradation zone</span></td>
+        </tr>
+        <tr>
+          <td>
+            American Community Survey 5-Year Estimates
+            <div class="publisher">Tables B25001, B25044</div>
+          </td>
+          <td>U.S. Census Bureau<br><span class="publisher">U.S. Department of Commerce</span></td>
+          <td>Vehicles per household (1.9 California statewide all-household average, ACS B25044); behavioral mobilization factor basis (FHWA)</td>
+          <td><span class="use-badge">Vehicle generation rate</span></td>
+        </tr>
+        <tr>
+          <td>International Building Code (IBC)</td>
+          <td>International Code Council</td>
+          <td>Egress capacity and stairwell requirements for buildings ≥ 4 stories; minimum exit width standards</td>
+          <td><span class="use-badge">Egress penalty (tall buildings)</span></td>
+        </tr>
+        <tr>
+          <td>OpenStreetMap Road Network</td>
+          <td>OpenStreetMap Foundation (public domain)</td>
+          <td>Road geometry, classification, and connectivity for bottleneck routing within 0.5-mile project radius</td>
+          <td><span class="use-badge">Route identification</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ── WHAT JOSH ADDS ────────────────────────────────────────────── -->
+<section class="bg-linen">
+  <div class="container">
+    <div class="eyebrow-flanked">What the Software Adds</div>
+    <h2>Speed, consistency, <em>and a paper trail.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">JOSH does not add methodology. It adds speed, consistency, and an interface that makes near-instant insight available to planning staff, city attorneys, and council members alike.</p>
+    <div class="adds-grid">
+      <div class="adds-col">
+        <h3>Without JOSH</h3>
+        <ul>
+          <li>Staff manually downloads FHSZ shapefiles, OSM road network data, and Census tables for each project</li>
+          <li>Engineer computes HCM capacity, applies degradation factors, identifies bottleneck by hand</li>
+          <li>Calculation takes days to weeks; each project requires a separate engagement</li>
+          <li>Results are not standardized — different analysts may use different source versions</li>
+          <li>Audit trail, if it exists, lives in an engineer's workpapers and is not publicly reproducible</li>
+          <li>Legal record depends on a retained expert who can be cross-examined on methodology choices</li>
+        </ul>
+        <h3 style="margin-top:28px;">With JOSH</h3>
+        <ul>
+          <li>Staff enters project address, units, and stories — result is ready in seconds</li>
+          <li>All data downloads (FHSZ, OSM, Census) are automatic, cached, and date-stamped</li>
+          <li>Every run produces a plain-text audit trail: every input, every formula, every output</li>
+          <li>Results are uniform across all projects — same version of every source, every time</li>
+          <li>Determination letter is generated automatically, citing every standard by name and edition</li>
+          <li>Any engineer can replicate the result independently — the city is not dependent on JOSH</li>
+        </ul>
+      </div>
+      <div>
+        <div class="demo-card">
+          <div class="demo-label">Berkeley, CA — Live Demonstration</div>
+          <h3>Six Projects. Three Outcomes. One Standard.</h3>
+          <p>The Berkeley demo shows JOSH applied to six representative projects — from a 10-unit infill to an 80-unit hillside development in a Very High Fire Hazard Zone. Each project receives a determination in seconds, with a full brief and hand-auditable audit trail.</p>
+
+          <div class="tier-row">
+            <span class="badge badge-min">Ministerial</span>
+            <span>Ashby Small Infill — 10 units, 2 stories</span>
+          </div>
+          <div class="tier-row">
+            <span class="badge badge-cond">Conditional</span>
+            <span>Claremont Hills — 25 units, 3 stories</span>
+          </div>
+          <div class="tier-row">
+            <span class="badge badge-disc">Discretionary</span>
+            <span>Hills Gateway — 80 units, FHSZ Zone&nbsp;3</span>
+          </div>
+
+          <div class="demo-btns">
+            <a class="btn btn-primary" href="berkeley/analysis_map.html">Open Interactive Map &rarr;</a>
+            <a class="btn btn-secondary" href="berkeley/index.html">View All Projects</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── ADOPTION PATHWAY ──────────────────────────────────────────── -->
+<section id="adoption">
+  <div class="container">
+    <div class="eyebrow-flanked">Adoption Pathway</div>
+    <h2>Three tiers. <em>Use today.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">Cities can adopt JOSH at three levels of formality. Each tier more fully implements AB 747 and the HAA public safety exception. Tier 1 requires no action — a city can use JOSH to support a safety finding in a staff report today under its existing General Plan.</p>
+    <div class="tier-grid">
+      <div class="tier-card">
+        <div class="tier-num">1</div>
+        <div class="tier-action">Use today — no council action required</div>
+        <h3>Staff Report Finding</h3>
+        <p>A planner runs JOSH and cites the ΔT result in a staff report as evidentiary support for a safety finding under the Housing Accountability Act (Gov. Code §65589.5(j)(1)). The calculation is substantive evidence of a quantifiable, direct, unavoidable safety impact grounded in objective written standards.</p>
+        <p class="tier-note">Best for: immediate use while council adoption is pending. Constitutionally grounded from day one; Tier 2 deepens the legislative record.</p>
+      </div>
+      <div class="tier-card">
+        <div class="tier-num">2</div>
+        <div class="tier-action">Single meeting cycle — resolution</div>
+        <h3>City Council Resolution</h3>
+        <p>Council adopts the ΔT standard by resolution as an objective development standard. This converts the methodology from ad hoc evidentiary support into a pre-adopted, legislatively enacted standard — the exact instrument courts give the highest deference under the HAA. Model resolution language and recitals are provided in the Legal Defensibility Memo.</p>
+        <p class="tier-note">Recommended first step. Protects prior determinations. Establishes uniform application going forward.</p>
+      </div>
+      <div class="tier-card">
+        <div class="tier-num">3</div>
+        <div class="tier-action">General plan cycle — Safety Element</div>
+        <h3>Safety Element Amendment</h3>
+        <p>The ΔT standard is incorporated into the city's Safety Element as required by AB 747 (Gov. Code §65302.15). This is the highest level of adoption — a General Plan policy carries the full weight of legislative enactment and cannot be challenged as ad hoc or pretextual. Typically done as part of a scheduled General Plan update.</p>
+        <p class="tier-note">The fullest implementation of AB 747 — the standard enacted into the General Plan, exactly as the legislature required.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── DOCUMENT LIBRARY ──────────────────────────────────────────── -->
+<section id="documents" class="bg-linen">
+  <div class="container">
+    <div class="eyebrow-flanked">Document Library</div>
+    <h2>Every audience. <em>Every document.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">Every document below is written for a specific audience. City attorneys reviewing for the first time should start with the plain-language explanation. Staff preparing council materials should start with the Legal Defensibility Memo.</p>
+    <div class="doc-grid">
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_Plain_English_For_Court.md">
+        <div class="doc-audience">Judges &bull; Council Members &bull; City Managers</div>
+        <h3>Plain-Language Explanation</h3>
+        <p>How the evacuation capacity standard works, written for judicial review. Uses the fire marshal nightclub analogy. Walks through all four steps with a concrete example. Explains why this is a life safety question, not a traffic question. Includes the full source documentation table.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_Legal_Defensibility_Memo.md">
+        <div class="doc-audience">City Attorneys &bull; Planning Directors</div>
+        <h3>Legal Defensibility Memorandum</h3>
+        <p>Complete legal framework for adoption. Documents how the ΔT standard satisfies all five HAA §65589.5(j) requirements: significant, quantifiable, direct, unavoidable, and objective. Includes three-tier adoption pathway, model resolution language, and responses to anticipated developer objections.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_PE_Technical_Brief.md">
+        <div class="doc-audience">Licensed Engineers &bull; Expert Witnesses</div>
+        <h3>Professional Engineer Technical Brief</h3>
+        <p>Full technical justification for the ΔT system. Every parameter is traced to its source publication and exhibit number. Covers HCM capacity tables, hazard degradation compositing, NIST escape window methodology, bottleneck selection algorithm, and egress penalty derivation. Written for peer review.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_v3_Specification.md">
+        <div class="doc-audience">Implementation &bull; Audit &bull; IT Staff</div>
+        <h3>v3.4 System Specification</h3>
+        <p>Complete technical specification for the JOSH v3.4 ΔT Standard implementation. Covers all five standards, data flows, scenario architecture, configuration parameters, and audit trail format. Source of truth for all code.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_City_Planner_Guide.md">
+        <div class="doc-audience">Planning Staff &bull; Planning Directors</div>
+        <h3>City Planner's Implementation Guide</h3>
+        <p>Workflow guide for planning staff using JOSH in daily project review. Covers which projects trigger the analysis, pre-application meeting guidance, how to write staff report findings for each determination tier, the four paths a developer can take to meet the standard, and responses to the seven most common developer objections.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_City_Engineer_Guide.md">
+        <div class="doc-audience">City Engineers &bull; Public Works Directors</div>
+        <h3>City Engineer's Verification and Conditions Guide</h3>
+        <p>Technical reference for engineers verifying JOSH determinations and specifying road improvement conditions. Covers road classification and lane count verification against HCM 2022, step-by-step independent ΔT calculation, conditions of approval for road improvements, and IFC §503 physical site access review.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_Fire_Chief_Guide.md">
+        <div class="doc-audience">Fire Chiefs &bull; Fire Marshals</div>
+        <h3>Fire Chief's Guide to the Evacuation Capacity Standard</h3>
+        <p>Explains how JOSH extends the fire marshal's occupancy limit principle — measure the exits, count the people, do the math — from buildings to the roads those buildings depend on for evacuation. Covers the fire chief's role at the council table and how the ΔT finding supports evacuation planning.</p>
+      </a>
+      <a class="doc-card" href="viewer.html?doc=docs/JOSH_IT_Guide.md">
+        <div class="doc-audience">IT Directors &bull; GIS Analysts</div>
+        <h3>IT Implementation Guide</h3>
+        <p>Technical deployment guide for city IT departments evaluating self-hosted JOSH implementation. Covers prerequisites, city configuration via YAML files, input data specifications, day-to-day operation, data sources and security posture, output format, update and refresh cadence, and the division of responsibility between the city and California Stewardship.</p>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ── OPEN SOURCE SOFTWARE ─────────────────────────────────────── -->
+<section id="software">
+  <div class="container">
+    <div class="eyebrow-flanked">Open Source Software</div>
+    <h2>Arithmetic, not <em>artificial intelligence.</em></h2>
+    <div class="rule"></div>
+    <p class="section-lead">JOSH is a Python command-line tool, not an AI system. Every determination it produces is the output of four arithmetic operations on published data. The code is open source under AGPL-3.0 so any city, engineer, or developer can inspect, verify, and run the calculation independently.</p>
+    <div class="oss-grid">
+      <div class="oss-body">
+        <p>
+          JOSH downloads data automatically from four public sources — Cal Fire, OpenStreetMap, the
+          U.S. Census Bureau, and the city boundary from Census TIGER — and applies the HCM 2022
+          capacity table, NFPA 1660 / 1616 community mass-evacuation design basis, and NIST Camp Fire timeline as a
+          pipeline of deterministic calculations. There is no machine learning, no model training,
+          and no probabilistic inference. The software is an automation layer over arithmetic.
+        </p>
+        <p>
+          The pipeline has three stages: data acquisition (Stage 1 downloads and caches all inputs),
+          capacity analysis (Stage 2 builds the road network, applies hazard degradation, and
+          identifies evacuation route bottlenecks), and the objective standards engine (Stage 3 runs
+          the ΔT test and generates the determination and audit trail). Every stage reads from config
+          files that expose every parameter, making the full calculation transparent to any reviewer.
+        </p>
+        <p>
+          Because the methodology does not belong to JOSH — it belongs to HCM, NFPA, NIST, and
+          Cal Fire — a city that stops using the software retains every legal position it established.
+          The determination letters cite the standards, not the software.
+        </p>
+      </div>
+      <div>
+        <div class="oss-card">
+          <div class="oss-label">Technical Specifications</div>
+          <div class="oss-row"><span class="oss-key">Language</span> Python 3.11+</div>
+          <div class="oss-row"><span class="oss-key">License</span> AGPL-3.0-or-later</div>
+          <div class="oss-row"><span class="oss-key">GIS Engine</span> GeoPandas · OSMnx · Shapely · PyProj</div>
+          <div class="oss-row"><span class="oss-key">Routing</span> NetworkX shortest-path (Dijkstra)</div>
+          <div class="oss-row"><span class="oss-key">Data Cache</span> 90-day TTL in <code style="font-family:monospace;font-size:12px;color:var(--ember)">data/{city}/</code></div>
+          <div class="oss-row"><span class="oss-key">Run Time</span> ~30 s first run (data download); &lt;5 s cached</div>
+          <div class="oss-row"><span class="oss-key">Output</span> Interactive HTML map · Per-project brief · Plaintext audit trail · CSV route inventory</div>
+          <div class="oss-btns">
+            <a class="btn btn-primary" href="https://github.com/twgonzalez/josh" target="_blank" rel="noopener">View on GitHub &rarr;</a>
+            <a class="btn btn-outline" href="viewer.html?doc=docs/JOSH_v3_Specification.md">v3.4 Specification</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ───────────────────────────────────────────────────── -->
+<footer>
+  <div class="footer-inner">
+    <div>
+      <div class="footer-brand">JOSH — Fire Evacuation Capacity Analysis System</div>
+      <div class="footer-text">
+        Developed by California Stewardship. JOSH is a Python CLI tool — an automation
+        layer over established national and state standards. The methodology is not proprietary —
+        every input, every formula, and every threshold is traceable to a publicly available source.
+        The software is open source under AGPL-3.0-or-later. The standards belong to the agencies
+        that published them.
+        <br><br>
+        All determinations produced by JOSH are objective and reproducible. No professional
+        discretion is applied. Any licensed engineer can independently verify any result using
+        the same published sources.
+        <br><br>
+        <a href="https://github.com/twgonzalez/josh" target="_blank" rel="noopener">github.com/twgonzalez/josh</a>
+        &nbsp;&mdash;&nbsp;AGPL-3.0-or-later
+        &nbsp;&mdash;&nbsp;
+        <a href="mailto:info@californiastewardship.org">info@californiastewardship.org</a>
+      </div>
+    </div>
+    <div class="footer-citations">
+      AB 747 — California Gov. Code §65302.15<br>
+      HAA — Gov. Code §65589.5(j)(1)<br>
+      FHSZ — Gov. Code §51175–51189<br>
+      HCM 2022 — Transportation Research Board<br>
+      NFPA 1660 (2024) / NFPA 1616 (2020) — Nat'l Fire Protection Association<br>
+      NFPA 101 (2024 CA ed.) — Nat'l Fire Protection Association<br>
+      NIST TN 2135 — U.S. Dept. of Commerce<br>
+      ACS B25044 — U.S. Census Bureau<br>
+      IBC 2024 Ch. 10 — International Code Council<br>
+      CWUIC 2025 — California State Fire Marshal
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

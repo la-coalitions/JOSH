@@ -1,0 +1,436 @@
+# JOSH v4.0 — Global Parameters
+# Fire Evacuation Capacity Analysis System
+# All thresholds trace to published sources. No parameter requires city-level adoption.
+# Override city-specific values in config/cities/{city}.yaml
+
+parameters_version: "4.0"
+
+# ============================================================
+# Project Size Threshold
+# Basis: 15 units × 1.9 vpu × 0.90 mob = 25.65 vph — measurable on any road type.
+# Statutory anchor: SB 330 (Gov. Code §65905.5) — heightened protections at 10+ units;
+#   15 is the first integer above ITE de minimis that falls in the SB 330 project class.
+# This is an administrative proportionality threshold, NOT a safety threshold.
+# ============================================================
+
+unit_threshold: 15
+
+# ============================================================
+# Behavioral Mobilization Rate — constant for all projects, all zones
+# Source: NFPA 1660 (Standard for Emergency, Continuity, and Crisis Management:
+#         Preparedness, Response, and Recovery, 2024 ed.; consolidates
+#         NFPA 1616:2020 Mass Evacuation, Sheltering, and Re-entry Programs) —
+#         community mass-evacuation design framework.
+#         0.90 represents vehicle-eligible household mobilization adjusted from
+#         the full-evacuation design basis for ~10% zero-vehicle households per
+#         Census ACS B25044.
+# Empirical California validation: Roberson et al. (2012), Attitudes on wildfire
+#         evacuation (J. Emergency Management 10(5), 335-347), documents intended
+#         evacuation rates in Southern California WUI communities.
+# Analogical reasoning (not the operative source): NFPA 101 (Life Safety Code,
+#         2024 California ed.) sizes building exits for 100% occupant load — the
+#         same full-load design principle is here applied at the community scale.
+# Independent review status: NFPA 1660 / 1616 confirmed as the appropriate
+#         community-evacuation citation by Fire Science Consulting LLC review
+#         (Ziazi & Simeoni, May 2026). Earlier docs that cited NFPA 101 or FHWA
+#         Emergency Transportation Operations for this parameter were imprecise
+#         and have been corrected.
+#
+# Represents the fraction of a project's vehicles that reach the road during
+# an evacuation. Does NOT represent vehicle non-ownership — that is already
+# embedded in vehicles_per_unit (the all-household ACS average).
+#
+# FHSZ affects the road (through the hazard degradation factor below).
+# It does not affect mobilization. The project's residents are the project's
+# residents regardless of where the project is located.
+# ============================================================
+
+behavioral_mobilization: 0.90
+# Source: NFPA 1660 (2024) / NFPA 1616 (2020) community mass-evacuation standard;
+# 0.90 = full-evacuation design basis adjusted for ~10% zero-vehicle HHs per
+# Census ACS B25044. Cities may override with documented local evidence
+# (evacuation plan compliance data, local fire history study, or licensed
+# transportation engineer study).
+
+# ============================================================
+# Hazard-Aware Road Capacity Degradation
+# Roads within fire hazard zones do not operate at full HCM capacity during wildfires.
+# Each factor is a composite engineering-judgment value applied to CAL FIRE
+# FHSZ-designated road segments.
+#
+# Source: Composite engineering-judgment factor; underlying derivation is subject
+# to independent traffic-engineering review (Fire Science Consulting LLC, Ziazi &
+# Simeoni, May 2026; open item on the JOSH Methodology Roadmap). The factor
+# scaling is conservative relative to HCM 2022 Chapter 11 Exhibit 11-20 worst-case
+# weather Capacity Adjustment Factors (heavy snow, CAF 0.72–0.80) on the basis
+# that WUI fire conditions (smoke visibility, debris, counterflow evacuation
+# traffic, and concurrent emergency apparatus access per CCR 1273.00) impose
+# constraints more severe than any HCM-calibrated weather scenario.
+#
+# Empirical validation references:
+#   - Maranghides et al. (2021), NIST TN 2135 — Camp Fire timeline; documented
+#     road burnovers on 3 of 5 evacuation routes (60% factor=0.0).
+#   - Rohaert et al. (2023), Transp. Res. Part D 116:103424 — Kincade Fire
+#     traffic dynamics.
+#   - Wetterberg et al. (2022), Safety Science — smoke effects on driving speed.
+#
+# Earlier JOSH documentation cited HCM Exhibits 10-15 and 10-17 as the direct
+# source of these factors. That attribution was incorrect: Exhibit 10-15 is the
+# Lane Closure Severity Index for work zones and Exhibit 10-17 is a photograph;
+# neither contains fire/smoke/visibility capacity values. The 0.35 / 0.50 / 0.75
+# values stand as the composite engineering-judgment scaling pending independent
+# traffic-engineering review.
+#
+# Derivation (conservative engineering judgment):
+#   VHFHSZ (0.35): Severe smoke visibility loss + counterflow emergency vehicle
+#                  obstruction on 2-lane roads; bounded above by Camp Fire
+#                  empirical burnover rate (60% of routes at factor=0.0).
+#   High FHSZ (0.50): Moderate smoke + intermittent shoulder incidents.
+#   Moderate FHSZ (0.75): Light smoke; minimal direct fire-front exposure.
+#   Non-FHSZ (1.00): No fire-related degradation applied.
+#
+# Conservative in the developer's favor: Camp Fire showed factor=0.0 on 60% of routes.
+# ============================================================
+
+hazard_degradation:
+  enabled: true
+  factors:
+    vhfhsz: 0.35
+    high_fhsz: 0.50
+    moderate_fhsz: 0.75
+    non_fhsz: 1.00
+
+# ============================================================
+# Safe Egress Windows by Hazard Zone (minutes)
+# Source: NIST TN 2135 (Camp Fire timeline), TN 2252 (NETTRA), TN 2262 (ESCAPE)
+#
+#   VHFHSZ (45 min):  Fire ignited 6:20 AM; spot fires in Paradise by 8:00 AM;
+#                     fire front hit eastern Paradise at 8:40 AM → 40 min from
+#                     first spot fires to fire front arrival + 5 min for modern
+#                     WEA alert systems (not available in 2018).
+#   High FHSZ (90 min): Fire spread ~1-2 mph vs 3-5 mph in VHFHSZ under Santa
+#                       Ana winds. Approximately 2× the VHFHSZ window.
+#   Moderate FHSZ (120 min): Lower fire intensity, greater distance from typical
+#                            ignition points.
+#   Non-FHSZ (120 min): Standard FEMA emergency planning window for no-notice events.
+# ============================================================
+
+safe_egress_window:
+  vhfhsz: 45         # NIST Camp Fire: spot fires to fire front = 40 min
+                      # + 5 min for modern WEA alert systems (not available in 2018)
+  high_fhsz: 90      # Fire spread ~1-2 mph vs 3-5 mph VHFHSZ; ~2× window
+  moderate_fhsz: 120  # Lower intensity, greater distance from typical ignition
+  non_fhsz: 120      # General emergency planning window (FEMA standard)
+  citation: >
+    Maranghides, A., et al. (2021). A Case Study of the Camp Fire —
+    Fire Progression Timeline. NIST Technical Note 2135.
+    Maranghides, A., et al. (2023). A Case Study of the Camp Fire —
+    NETTRA. NIST Technical Note 2252.
+    Maranghides, A., et al. (2023, updated 2025). WUI Fire Evacuation
+    and Sheltering Considerations (ESCAPE). NIST Technical Note 2262.
+
+# ============================================================
+# Maximum Project Share of Safe Egress Window
+# Single policy value — all zone thresholds derived from this × safe_egress_window
+# Justification: standard engineering significance threshold (5%); at 5%, a road
+# can absorb ~20 equal-sized projects before new development alone exhausts the
+# safe window. Structural ceiling: 20 × 5% = 100%.
+# ============================================================
+
+max_project_share: 0.05  # 5% — standard engineering significance threshold
+                         # Allows ~20 projects before new development alone
+                         # exhausts the evacuation window
+
+# DERIVED thresholds — computed at runtime from safe_egress_window × max_project_share
+#   vhfhsz:        45 × 0.05 = 2.25 min
+#   high_fhsz:     90 × 0.05 = 4.50 min
+#   moderate_fhsz: 120 × 0.05 = 6.00 min
+#   non_fhsz:      120 × 0.05 = 6.00 min
+# The max_marginal_minutes key has been removed. All code computes thresholds
+# at runtime as: safe_egress_window[zone] × max_project_share
+
+# ============================================================
+# Vehicles Per Housing Unit
+# Source: Census ACS 5-Year, Table B25044 (vehicles available by tenure)
+# California statewide all-household average, including zero-vehicle households.
+# This is the weighted average across all occupied housing units — zero-vehicle
+# households are already reflected in this figure. Do NOT apply a separate
+# vehicle-ownership multiplier; that would double-deduct the zero-vehicle population.
+# Override per city in config/cities/{city}.yaml with local ACS B25044 data.
+# ============================================================
+
+vehicles_per_unit: 1.9
+
+# ============================================================
+# Building Egress Penalty
+# Source: NFPA 101 (Life Safety Code, 2024 California ed.) Chapter 7 +
+#         International Building Code (IBC) 2024 Chapter 10 — Means of Egress.
+# Applies to multi-story buildings — stair descent + garage egress time.
+# Developer can reduce penalty by adding stairwells, widening stairs, adding garage exits.
+# Note: NFPA 101 governs building egress (the legitimate use of this standard);
+# it is NOT the source for the community-evacuation mobilization rate (see
+# behavioral_mobilization above, which is sourced to NFPA 1660 / 1616).
+# Roadmap (open item): low-rise δt(egress) derivation per IBC 2024 §1005.1 flow
+# rates + SFPE Handbook Ch. 64 (Movement of People), to be added in a future
+# methodology update.
+# ============================================================
+
+egress_penalty:
+  threshold_stories: 4        # NFPA 101 (2024 CA ed.) high-rise threshold (75 ft)
+  minutes_per_story: 1.5      # NFPA 101 stair descent + IBC 2024 Ch. 10 garage egress
+  max_minutes: 12             # Cap at 8-story equivalent
+
+# ============================================================
+# HCM 2022 Capacity Table (passenger cars per hour)
+# Source: Highway Capacity Manual, 7th Edition (2022), Transportation Research Board
+# ============================================================
+
+hcm_capacity:
+  freeway:
+    capacity_per_lane: 2250   # pc/h per lane, Ch. 12, Exhibit 12-6
+  multilane:
+    capacity_per_lane: 1900   # pc/h per lane, Ch. 12, Exhibit 12-7
+  two_lane:
+    # Capacity by posted speed limit (mph), Ch. 15
+    by_speed:
+      20: 900
+      25: 1125
+      30: 1350
+      35: 1575
+      40: 1700
+      45: 1700
+      50: 1700
+      55: 1700
+      65: 1700
+
+# ============================================================
+# Road Type Classification (OSM highway tag → HCM type)
+# ============================================================
+
+road_type_mapping:
+  freeway:
+    - motorway
+    - motorway_link
+    - trunk
+    - trunk_link
+  multilane:
+    - primary
+    - primary_link
+    - secondary
+    - secondary_link
+  two_lane:
+    - tertiary
+    - tertiary_link
+    - residential
+    - living_street
+    - unclassified
+    - road
+
+# ============================================================
+# Lane Count Estimates (when OSM data is missing)
+# ============================================================
+
+lane_defaults:
+  motorway: 3
+  motorway_link: 2
+  trunk: 2
+  trunk_link: 1
+  primary: 2
+  primary_link: 1
+  secondary: 2
+  secondary_link: 1
+  tertiary: 1
+  tertiary_link: 1
+  residential: 1
+  living_street: 1
+  unclassified: 1
+  road: 1
+
+# ============================================================
+# Speed Defaults (mph) when OSM maxspeed is missing
+# ============================================================
+
+speed_defaults:
+  motorway: 65
+  motorway_link: 45
+  trunk: 55
+  trunk_link: 35
+  primary: 45
+  primary_link: 35
+  secondary: 35
+  secondary_link: 25
+  tertiary: 25
+  tertiary_link: 20
+  residential: 25
+  living_street: 15
+  unclassified: 25
+  road: 25
+
+# ============================================================
+# Width-Based Speed Inference
+# ============================================================
+# When OSM maxspeed tag is absent, infer speed from the OSM width tag (if present).
+# Thresholds are in meters; first bracket where width_m < width_max_m wins.
+# Source: IFC §503 fire apparatus access road minimums (20 ft one-way, 26 ft two-way)
+# and AASHTO geometric design guidelines for low-speed residential streets.
+#
+# IFC width reference points (ft → m):
+#   15 ft = 4.57 m  (alley / single-track access)
+#   20 ft = 6.10 m  (IFC §503 one-way minimum — below this is non-compliant)
+#   24 ft = 7.32 m  (narrow two-way)
+#   26 ft = 7.92 m  (IFC §503 two-way minimum)
+#
+# Example: Union St / Clark Ave (Encinitas) at 19–21 ft (5.8–6.4 m) → tier 2 → 15 mph → 900 vph
+# Compare: standard residential at 25 mph default → 1125 vph (25% overcapacity for this road)
+
+width_speed_inference:
+  - width_max_m: 4.57    # < 15 ft — alley / single-track
+    inferred_speed_mph: 10
+  - width_max_m: 6.10    # < 20 ft — below IFC §503 one-way minimum (substandard)
+    inferred_speed_mph: 15
+  - width_max_m: 7.32    # < 24 ft — narrow two-way
+    inferred_speed_mph: 20
+  # >= 7.32 m: fall through to speed_defaults (no width-based correction)
+
+# ============================================================
+# Evacuation Route Identification
+# ============================================================
+
+evacuation:
+  serving_route_radius_miles: 0.5   # Standard 2 search radius
+  max_path_length_ratio: 3.5        # v4.12 (all-viable-routes): include all exit paths within 3.5× the
+                                    # fastest-exit travel time. Dijkstra is weighted by travel time
+                                    # (length / speed_limit) — faster roads are preferred over shorter-but-slower
+                                    # roads. Under User Equilibrium assignment, rational evacuees take the
+                                    # fastest route to safety; paths more than 3.5× the fastest exit time are
+                                    # routes no evacuee would rationally choose when faster alternatives exist.
+                                    # The 3.5 default surfaces all viable divergent routes (no per-bottleneck
+                                    # deduplication) — the user controls which routes are visible on the map
+                                    # via per-route toggles in the sidebar.
+                                    # Edge weight formula: travel_time_s = length_m / (speed_mph × 0.44704)
+
+  # Regional network exit node filter (v4.0)
+  # Exit nodes are boundary nodes connected to roads of these OSM highway types.
+  # These represent capacity handoff points: where the local road network delivers
+  # evacuees into the regional system (freeway, trunk highway, major arterial).
+  # A fire does not respect city boundaries — the relevant destination is entry
+  # into the regional network, not crossing a political line.
+  # Override per city in config/cities/{city}.yaml for cities where secondary
+  # roads are the primary evacuation corridors (no freeway access).
+  exit_highway_types:
+    - motorway        # Interstate / State freeway (I-5, I-80, SR-101, etc.)
+    - motorway_link   # On-ramp / off-ramp to freeway
+    - trunk           # State highway not on freeway standard (CA-1, SR-78, etc.)
+    - trunk_link      # Ramp connections to trunk highways
+    - primary         # Major city arterial (El Camino Real, Rancho Santa Fe Rd)
+    - primary_link    # Ramp/slip connections to primary roads
+
+# ============================================================
+# LOS (Level of Service) Thresholds — INFORMATIONAL ONLY
+# Not used in ΔT determination. Retained for KLD cross-check and planning context.
+# Source: HCM 2022
+# ============================================================
+
+los_thresholds:
+  A: 0.10
+  B: 0.20
+  C: 0.40
+  D: 0.60
+  E: 0.95
+  F: 999.0
+
+# vc_threshold retained for informational v/c display only (not in determination logic)
+vc_threshold: 0.95
+
+# ============================================================
+# AADT to peak hour conversion (informational; not used in ΔT determination)
+# ============================================================
+
+aadt_peak_hour_factor: 0.10
+
+# ============================================================
+# Demand Model
+# ============================================================
+
+evacuation_demand:
+  method: "catchment"
+  # "catchment" — housing-unit-weighted Dijkstra catchment per segment
+  # "road_class" — flat utilization rate by road class (legacy fallback)
+
+# KLD buffer demand — informational only (informational citywide planning reference)
+demand:
+  buffer_radius_miles: 0.25
+  employee_mobilization_day: 1.00
+  employee_mobilization_night: 0.10
+  student_mobilization_day: 1.00
+  vehicles_per_unit: 1.9  # mirrors global vehicles_per_unit (ACS B25044 CA statewide)
+  employee_vehicle_occupancy: 1.0
+  scenario: "maximum"
+
+# ============================================================
+# FHSZ Zone Configuration
+# Source: CAL FIRE Office of State Fire Marshal
+# ============================================================
+
+fhsz:
+  trigger_zones:
+    - 2
+    - 3
+  api_base: "https://egis.fire.ca.gov/arcgis/rest/services/FRAP/HHZ_ref_FHSZ/MapServer"
+
+# ============================================================
+# SB 79 Transit Proximity (Standard 5 — Informational Flag)
+# Identifies projects within 0.5 miles of Tier 1 or Tier 2 transit.
+# Does not affect tier determination — informational context only.
+# ============================================================
+
+sb79_transit:
+  enabled: true
+  radius_miles: 0.5
+
+# ============================================================
+# Census ACS Configuration
+# ============================================================
+
+census:
+  acs_year: 2022
+  housing_units_table: "B25001_001E"
+  population_table: "B01001_001E"
+  api_base: "https://api.census.gov/data"
+  max_origins: 100
+  lodes_year: 2021
+
+# ============================================================
+# Data Caching
+# ============================================================
+
+cache_ttl_days: 90
+
+# ============================================================
+# AB 747 Report Parameters
+# Used exclusively by `main.py report --city` and agents/visualization/ab747_report.py
+# Source: Gov. Code §65302.15 (AB 747), SB 99, FHWA Emergency Transportation Operations
+# ============================================================
+
+ab747:
+  # Number of worst-performing evacuation segments to highlight in the bottleneck table
+  bottleneck_top_n: 10
+
+  # Minimum housing units in a block group to trigger a "second egress" recommendation.
+  # Block groups below this size may have limited improvement options.
+  second_egress_min_units: 50
+
+  # v/c ratio above which contraflow operations are recommended on multilane roads.
+  # Source: FHWA Emergency Transportation Operations guide.
+  contraflow_vc_threshold: 0.80
+
+  # Effective capacity (vph) below which a bottleneck segment triggers a capital
+  # improvement recommendation (when also on >= min_connectivity paths).
+  # Matches the "orange" bucket in _EFFECTIVE_CAPACITY_RAMP (350–700 vph).
+  capacity_improvement_eff_cap_threshold: 700
+
+  # Minimum number of evacuation paths through a segment to trigger a widening
+  # recommendation. Segments used by only one path may have limited-impact widening.
+  capacity_improvement_min_connectivity: 2
+
+  report_version: "1.0"
